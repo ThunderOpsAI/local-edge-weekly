@@ -1,23 +1,19 @@
-# Local Coffee Intelligence Plan - Prahran/Chapel St
+# Local Pub Intelligence Plan - Wangaratta
 
 ## Configuration
 - last_scan_date: 2026-02-02
-- location_focus: Chapel St, Prahran, VIC
+- location_focus: Wangaratta VIC
 
 ## Targets (The Underdogs - Potential App Customers)
-- Tall Timber Cafe: Focus on review volume gaps; simple menu analysis.
-- Crooked Letters: Focus on bagel/coffee competition and standing out in Prahran.
-- Reverie Cafe, Prahran: Compare Georgian niche vs. standard brunch demand.
+- Pinsent Hotel: Established pub benchmark with broad local appeal.
 
 ## Competition (The Market Leaders - To be Analyzed)
-- Journeyman: Industrial vibe, inventive brunch, high-end coffee.
-- Oscar Cooper: People-watching hub, bottomless options, high engagement.
-- Hobba: Cozy industrial vibe, coveted sidewalk seating.
-- Fourth Chapter: Sunlit courtyard, "trendy" menu (baos/waffles).
-- Penance: Luxury velvet interior, iconic "Tom Cruise Cake."
+- Old Town and Country Tavern: Focus on service consistency and local value.
+- Wangaratta Club: Focus on membership draw, food offering, and event nights.
+- Wangaratta RSL: Strong community presence and event-driven foot traffic.
 
 ## Scout Instructions
-1. Crawl Google Maps, Reddit, and Yelp for recent (last 7 days) reviews for ALL listed cafes.
+1. Crawl Google Maps, Reddit, and venue websites for recent (last 7 days) reviews and venue signals for ALL listed pubs.
 2. Generate a "Vibe vs. Value" score for the Targets compared to the Competition.
-3. Identify specific "Service Failures" at the Competition (e.g., "Wait times at Journeyman were too long") that the Targets could exploit.
+3. Identify specific "Service Failures" at the Competition (e.g., long waits, inconsistent meals, weak atmosphere) that the Target could exploit.
 4. Output results to 'weekly_intel_report.json'.

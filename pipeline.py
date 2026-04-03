@@ -1,6 +1,7 @@
 import json
 import os
 import re
+from urllib.parse import parse_qs, unquote_plus, urlparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -8,10 +9,35 @@ from typing import Dict, List, Optional, Tuple
 import requests
 
 
+def load_dotenv_file(dotenv_path: str) -> None:
+    if not os.path.exists(dotenv_path):
+        return
+
+    with open(dotenv_path, "r", encoding="utf-8") as f:
+        for raw_line in f:
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            key = key.strip()
+            value = value.strip()
+
+            if not key or key in os.environ:
+                continue
+
+            if (value.startswith('"') and value.endswith('"')) or (value.startswith("'") and value.endswith("'")):
+                value = value[1:-1]
+
+            os.environ[key] = value
+
+
+load_dotenv_file(os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env"))
+
+
 SOURCE_AUTHORITY = {
     "google_maps": 4,
     "reddit": 3,
-    "yelp_tripadvisor": 2,
     "competitor_url": 1,
 }
 
@@ -37,6 +63,19 @@ class Signal:
     happened_at: Optional[datetime] = None
 
 
+@dataclass
+class GoogleLookupResult:
+    api_status: str
+    via: str
+    query: str
+    name: Optional[str] = None
+    place_id: Optional[str] = None
+    rating: Optional[float] = None
+    reviews_count: Optional[int] = None
+    http_status: Optional[int] = None
+    error_message: Optional[str] = None
+
+
 class SourceStats:
     def __init__(self) -> None:
         self.success = 0
@@ -59,11 +98,12 @@ class SourceStats:
         return self.fail / self.total
 
 
-def parse_plan(plan_path: str) -> Tuple[datetime, List[Cafe], List[Cafe]]:
+def parse_plan(plan_path: str) -> Tuple[datetime, str, List[Cafe], List[Cafe]]:
     with open(plan_path, "r", encoding="utf-8") as f:
         content = f.read().splitlines()
 
     last_scan_date = None
+    location_focus = ""
     targets: List[Cafe] = []
     competition: List[Cafe] = []
     current_section = None
@@ -73,6 +113,10 @@ def parse_plan(plan_path: str) -> Tuple[datetime, List[Cafe], List[Cafe]]:
         if stripped.startswith("- last_scan_date:"):
             value = stripped.split(":", 1)[1].strip()
             last_scan_date = datetime.strptime(value, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            continue
+
+        if stripped.startswith("- location_focus:"):
+            location_focus = stripped.split(":", 1)[1].strip()
             continue
 
         if stripped.startswith("## Targets"):
@@ -102,9 +146,11 @@ def parse_plan(plan_path: str) -> Tuple[datetime, List[Cafe], List[Cafe]]:
 
     if not last_scan_date:
         raise ValueError("Missing `last_scan_date` in PLAN.md")
+    if not location_focus:
+        raise ValueError("Missing `location_focus` in PLAN.md")
     if not targets or not competition:
         raise ValueError("PLAN.md must include both Targets and Competition sections")
-    return last_scan_date, targets, competition
+    return last_scan_date, location_focus, targets, competition
 
 
 def score_confidence_from_text(text: str) -> float:
@@ -128,6 +174,324 @@ def normalize_impact(text: str) -> int:
     return 4
 
 
+GOOGLE_POSITIVE_REVIEW_PATTERNS = {
+    "friendly staff": [r"\bfriendly\b", r"\bwelcoming\b", r"\blovely staff\b", r"\bgreat service\b"],
+    "strong meals": [r"\bgreat food\b", r"\bdelicious\b", r"\btasty\b", r"\bexcellent meals?\b", r"\bgood meals?\b"],
+    "good value": [r"\bgood value\b", r"\bgreat value\b", r"\bwell priced\b", r"\breasonable prices?\b"],
+    "strong atmosphere": [r"\bgreat atmosphere\b", r"\bnice atmosphere\b", r"\bgood vibe\b", r"\blive music\b"],
+    "drink selection": [r"\bgreat drinks?\b", r"\bgood beers?\b", r"\bcold beers?\b", r"\bgood wine\b"],
+}
+
+
+GOOGLE_NEGATIVE_REVIEW_PATTERNS = {
+    "slow service": [r"\bslow\b", r"\bwait(?:ed|ing)? too long\b", r"\blong wait\b", r"\btook forever\b"],
+    "staff friction": [r"\brude\b", r"\bunfriendly\b", r"\bbad service\b", r"\bpoor service\b"],
+    "pricing complaints": [r"\boverpriced\b", r"\bexpensive\b", r"\bpricey\b"],
+    "food quality issues": [r"\bcold food\b", r"\bcold meals?\b", r"\bdry\b", r"\bbland\b", r"\bdisappoint"],
+    "crowding or noise": [r"\bnoisy\b", r"\bcrowded\b", r"\btoo busy\b"],
+    "booking friction": [r"\bbooking\b", r"\bbooked\b", r"\breservation\b"],
+}
+
+
+def load_json_env(name: str) -> Dict[str, object]:
+    raw = os.getenv(name)
+    if not raw:
+        return {}
+    try:
+        value = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def extract_google_place_id(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    if text.startswith("ChIJ") or text.startswith("Ei"):
+        return text
+
+    if text.startswith("http://") or text.startswith("https://"):
+        parsed = urlparse(text)
+        params = parse_qs(parsed.query)
+        for key in ("query_place_id", "place_id"):
+            ids = params.get(key)
+            if ids and ids[0]:
+                return ids[0]
+
+        match = re.search(r"/place/[^/]+/data=!4m!3m1!1s([^/?]+)", text)
+        if match:
+            return match.group(1)
+
+    return None
+
+
+def extract_google_search_query(value: object) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+
+    text = value.strip()
+    if not text:
+        return None
+
+    if text.startswith("http://") or text.startswith("https://"):
+        parsed = urlparse(text)
+        params = parse_qs(parsed.query)
+        for key in ("query", "q"):
+            queries = params.get(key)
+            if queries and queries[0]:
+                return queries[0]
+
+        search_match = re.search(r"/maps/search/([^/?]+)", parsed.path)
+        if search_match:
+            return unquote_plus(search_match.group(1))
+
+    return text
+
+
+def textsearch_place_rating(query: str, key: str) -> GoogleLookupResult:
+    url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
+    params = {"query": query, "key": key}
+    resp = requests.get(url, params=params, timeout=20)
+    if resp.status_code != 200:
+        return GoogleLookupResult(
+            api_status="HTTP_ERROR",
+            via="textsearch",
+            query=query,
+            http_status=resp.status_code,
+        )
+
+    payload = resp.json()
+    status = payload.get("status", "UNKNOWN")
+    if status != "OK":
+        return GoogleLookupResult(
+            api_status=str(status),
+            via="textsearch",
+            query=query,
+            http_status=resp.status_code,
+            error_message=payload.get("error_message"),
+        )
+
+    results = payload.get("results", [])
+    if not results:
+        return GoogleLookupResult(
+            api_status="OK_EMPTY",
+            via="textsearch",
+            query=query,
+            http_status=resp.status_code,
+        )
+
+    top = results[0]
+    rating = top.get("rating")
+    name = top.get("name") or query
+    place_id = top.get("place_id")
+    if rating is None:
+        return GoogleLookupResult(
+            api_status="OK_NO_RATING",
+            via="textsearch",
+            query=query,
+            name=str(name),
+            place_id=str(place_id) if place_id else None,
+            http_status=resp.status_code,
+        )
+
+    reviews_count = top.get("user_ratings_total")
+    return GoogleLookupResult(
+        api_status="OK",
+        via="textsearch",
+        query=query,
+        name=str(name),
+        place_id=str(place_id) if place_id else None,
+        rating=float(rating),
+        reviews_count=reviews_count,
+        http_status=resp.status_code,
+    )
+
+
+def details_place_rating(place_id: str, key: str) -> GoogleLookupResult:
+    url = "https://maps.googleapis.com/maps/api/place/details/json"
+    params = {
+        "place_id": place_id,
+        "fields": "name,rating,user_ratings_total",
+        "key": key,
+    }
+    resp = requests.get(url, params=params, timeout=20)
+    if resp.status_code != 200:
+        return GoogleLookupResult(
+            api_status="HTTP_ERROR",
+            via="details",
+            query=place_id,
+            http_status=resp.status_code,
+        )
+
+    payload = resp.json()
+    status = payload.get("status", "UNKNOWN")
+    if status != "OK":
+        return GoogleLookupResult(
+            api_status=str(status),
+            via="details",
+            query=place_id,
+            http_status=resp.status_code,
+            error_message=payload.get("error_message"),
+        )
+
+    result = payload.get("result") or {}
+    rating = result.get("rating")
+    name = result.get("name") or place_id
+    if rating is None:
+        return GoogleLookupResult(
+            api_status="OK_NO_RATING",
+            via="details",
+            query=place_id,
+            name=str(name),
+            http_status=resp.status_code,
+        )
+
+    reviews_count = result.get("user_ratings_total")
+    return GoogleLookupResult(
+        api_status="OK",
+        via="details",
+        query=place_id,
+        name=str(name),
+        place_id=place_id,
+        rating=float(rating),
+        reviews_count=reviews_count,
+        http_status=resp.status_code,
+    )
+
+
+def details_place_context(place_id: str, key: str) -> Dict[str, object]:
+    url = "https://maps.googleapis.com/maps/api/place/details/json"
+    params = {
+        "place_id": place_id,
+        "fields": "name,website,price_level,reviews,user_ratings_total,rating,opening_hours",
+        "reviews_sort": "newest",
+        "reviews_no_translations": "true",
+        "key": key,
+    }
+    resp = requests.get(url, params=params, timeout=20)
+    if resp.status_code != 200:
+        return {"api_status": "HTTP_ERROR", "http_status": resp.status_code}
+
+    payload = resp.json()
+    status = payload.get("status", "UNKNOWN")
+    if status != "OK":
+        return {
+            "api_status": str(status),
+            "http_status": resp.status_code,
+            "error_message": payload.get("error_message"),
+        }
+
+    result = payload.get("result") or {}
+    return {
+        "api_status": "OK",
+        "http_status": resp.status_code,
+        "name": result.get("name"),
+        "website": result.get("website"),
+        "price_level": result.get("price_level"),
+        "rating": result.get("rating"),
+        "reviews_count": result.get("user_ratings_total"),
+        "opening_hours": (result.get("opening_hours") or {}).get("weekday_text"),
+        "reviews": result.get("reviews", []),
+    }
+
+
+def extract_review_topics(text: str, patterns: Dict[str, List[str]]) -> List[str]:
+    lower = text.lower()
+    matches = []
+    for topic, topic_patterns in patterns.items():
+        if any(re.search(pattern, lower) for pattern in topic_patterns):
+            matches.append(topic)
+    return matches
+
+
+def summarize_topics(prefix: str, counts: Dict[str, int]) -> Optional[str]:
+    if not counts:
+        return None
+
+    top_topics = sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:2]
+    labels = [topic for topic, _count in top_topics]
+    if len(labels) == 1:
+        body = labels[0]
+    else:
+        body = f"{labels[0]} and {labels[1]}"
+    return f"{prefix} {body}."
+
+
+def build_google_review_signals(cafe: Cafe, context: Dict[str, object]) -> List[Signal]:
+    reviews = context.get("reviews")
+    if not isinstance(reviews, list) or not reviews:
+        return []
+
+    positive_counts: Dict[str, int] = {}
+    negative_counts: Dict[str, int] = {}
+    latest_positive_at: Optional[datetime] = None
+    latest_negative_at: Optional[datetime] = None
+
+    for review in reviews:
+        if not isinstance(review, dict):
+            continue
+
+        text = str(review.get("text") or "").strip()
+        rating = review.get("rating")
+        review_time = review.get("time")
+        happened_at = None
+        if isinstance(review_time, (int, float)):
+            happened_at = datetime.fromtimestamp(review_time, tz=timezone.utc)
+
+        if text and isinstance(rating, (int, float)) and rating >= 4:
+            for topic in extract_review_topics(text, GOOGLE_POSITIVE_REVIEW_PATTERNS):
+                positive_counts[topic] = positive_counts.get(topic, 0) + 1
+                if happened_at and (latest_positive_at is None or happened_at > latest_positive_at):
+                    latest_positive_at = happened_at
+
+        if text and isinstance(rating, (int, float)) and rating <= 3:
+            for topic in extract_review_topics(text, GOOGLE_NEGATIVE_REVIEW_PATTERNS):
+                negative_counts[topic] = negative_counts.get(topic, 0) + 1
+                if happened_at and (latest_negative_at is None or happened_at > latest_negative_at):
+                    latest_negative_at = happened_at
+
+    signals: List[Signal] = []
+    if cafe.kind == "target":
+        strength_summary = summarize_topics("Google reviews praise", positive_counts)
+        if strength_summary:
+            signals.append(
+                Signal(
+                    source="google_maps",
+                    cafe=cafe.name,
+                    kind="review_strength",
+                    summary=strength_summary,
+                    impact=6 if sum(positive_counts.values()) >= 3 else 5,
+                    confidence=8.9,
+                    happened_at=latest_positive_at,
+                )
+            )
+    else:
+        issue_summary = summarize_topics("Google reviews mention", negative_counts)
+        if issue_summary:
+            signals.append(
+                Signal(
+                    source="google_maps",
+                    cafe=cafe.name,
+                    kind="review_issue",
+                    summary=issue_summary,
+                    impact=8 if sum(negative_counts.values()) >= 3 else 7,
+                    confidence=8.9,
+                    happened_at=latest_negative_at,
+                )
+            )
+
+    return signals
+
+
+def is_google_lookup_error(status: str) -> bool:
+    return status not in {"OK", "ZERO_RESULTS", "NOT_FOUND", "OK_EMPTY", "OK_NO_RATING"}
+
+
 def get_ai_studio_key() -> Optional[str]:
     return os.getenv("GEMINI_API_KEY") or os.getenv("AI_STUDIO_API_KEY")
 
@@ -138,7 +502,7 @@ def generate_hook_with_gemini(target_name: str, gap: str, competitor_issue: str)
         return None
 
     prompt = (
-        "You are generating a concise sales hook for a local cafe intelligence report.\n"
+        "You are generating a concise sales hook for a local venue intelligence report.\n"
         "Rules:\n"
         "- Use only the facts provided below.\n"
         "- If facts are insufficient, respond exactly: Data Unavailable\n"
@@ -170,35 +534,102 @@ def generate_hook_with_gemini(target_name: str, gap: str, competitor_issue: str)
         return None
 
 
-def fetch_google_maps_signals(cafes: List[Cafe], stats: SourceStats) -> List[Signal]:
+def fetch_google_maps_signals(
+    cafes: List[Cafe],
+    location_focus: str,
+    stats: SourceStats,
+    diagnostics: Optional[List[Dict[str, object]]] = None,
+) -> List[Signal]:
     key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not key:
         return []
 
+    place_overrides = load_json_env("GOOGLE_MAPS_PLACES_JSON")
     signals: List[Signal] = []
     for cafe in cafes:
         try:
-            url = "https://maps.googleapis.com/maps/api/place/textsearch/json"
-            params = {"query": f"{cafe.name} Prahran VIC", "key": key}
-            resp = requests.get(url, params=params, timeout=20)
-            if resp.status_code != 200:
-                stats.mark_fail()
+            override = place_overrides.get(cafe.name)
+            resolved: Optional[GoogleLookupResult] = None
+            attempts: List[Dict[str, object]] = []
+
+            place_id = extract_google_place_id(override)
+            if place_id:
+                lookup = details_place_rating(place_id, key)
+                attempts.append(lookup.__dict__.copy())
+                if lookup.api_status == "OK":
+                    resolved = lookup
+            else:
+                search_query = extract_google_search_query(override)
+                if search_query:
+                    lookup = textsearch_place_rating(search_query, key)
+                    attempts.append(lookup.__dict__.copy())
+                    if lookup.api_status == "OK":
+                        resolved = lookup
+
+            queries = [
+                f"{cafe.name} {location_focus}",
+                f"{cafe.name} Wangaratta VIC pub",
+                f"{cafe.name} Wangaratta pub",
+                cafe.name,
+            ]
+            if not resolved:
+                for query in queries:
+                    lookup = textsearch_place_rating(query, key)
+                    attempts.append(lookup.__dict__.copy())
+                    if lookup.api_status == "OK":
+                        resolved = lookup
+                        break
+
+            if not resolved:
+                if diagnostics is not None:
+                    diagnostics.append(
+                        {
+                            "cafe": cafe.name,
+                            "override_present": bool(override),
+                            "resolved": False,
+                            "attempts": attempts,
+                        }
+                    )
+                if any(is_google_lookup_error(str(attempt.get("api_status"))) for attempt in attempts):
+                    stats.mark_fail()
+                else:
+                    stats.mark_success()
                 continue
 
-            payload = resp.json()
-            results = payload.get("results", [])
-            if not results:
-                stats.mark_success()
-                continue
+            resolved_name = resolved.name or cafe.name
+            rating = resolved.rating
+            reviews_count = resolved.reviews_count
+            target_tokens = [t for t in re.split(r"[^a-z0-9]+", cafe.name.lower()) if len(t) > 2]
+            if target_tokens:
+                resolved_lower = resolved_name.lower()
+                if not all(token in resolved_lower for token in target_tokens[:2]):
+                    fallback = None
+                    for query in queries[1:]:
+                        fallback = textsearch_place_rating(query, key)
+                        attempts.append(fallback.__dict__.copy())
+                        if fallback.api_status == "OK" and fallback.name:
+                            fallback_lower = fallback.name.lower()
+                            if all(token in fallback_lower for token in target_tokens[:2]):
+                                resolved_name = fallback.name
+                                rating = fallback.rating
+                                reviews_count = fallback.reviews_count
+                                break
 
-            top = results[0]
-            rating = top.get("rating")
-            reviews_count = top.get("user_ratings_total")
             if rating is None:
+                if diagnostics is not None:
+                    diagnostics.append(
+                        {
+                            "cafe": cafe.name,
+                            "override_present": bool(override),
+                            "resolved": False,
+                            "attempts": attempts,
+                            "reason": "NO_RATING",
+                        }
+                    )
                 stats.mark_success()
                 continue
 
-            text = f"Rating {rating} from {reviews_count} reviews."
+            text = f"{resolved_name}: Rating {rating} from {reviews_count} reviews."
             signals.append(
                 Signal(
                     source="google_maps",
@@ -209,6 +640,35 @@ def fetch_google_maps_signals(cafes: List[Cafe], stats: SourceStats) -> List[Sig
                     confidence=8.5,
                 )
             )
+
+            context = {}
+            if resolved.place_id:
+                context = details_place_context(resolved.place_id, key)
+                if context.get("api_status") == "OK":
+                    signals.extend(build_google_review_signals(cafe, context))
+
+            if diagnostics is not None:
+                diagnostics.append(
+                    {
+                        "cafe": cafe.name,
+                        "override_present": bool(override),
+                        "resolved": True,
+                        "resolved_name": resolved_name,
+                        "place_id": resolved.place_id,
+                        "rating": rating,
+                        "reviews_count": reviews_count,
+                        "details_context": {
+                            "api_status": context.get("api_status"),
+                            "website": context.get("website"),
+                            "price_level": context.get("price_level"),
+                            "opening_hours": context.get("opening_hours"),
+                            "reviews_fetched": len(context.get("reviews", [])) if isinstance(context.get("reviews"), list) else 0,
+                        }
+                        if context
+                        else None,
+                        "attempts": attempts,
+                    }
+                )
             stats.mark_success()
         except requests.RequestException:
             stats.mark_fail()
@@ -221,7 +681,7 @@ def parse_reddit_time(created_utc: float) -> datetime:
 
 def fetch_reddit_signals(cafes: List[Cafe], last_scan_date: datetime, stats: SourceStats) -> List[Signal]:
     headers = {"User-Agent": "local-edge-weekly/1.0"}
-    subreddits = ["melbourne", "prahran", "coffee"]
+    subreddits = ["melbourne", "australia", "coffee"]
     signals: List[Signal] = []
 
     for cafe in cafes:
@@ -265,47 +725,6 @@ def fetch_reddit_signals(cafes: List[Cafe], last_scan_date: datetime, stats: Sou
     return signals
 
 
-def fetch_yelp_tripadvisor_signals(cafes: List[Cafe], stats: SourceStats) -> List[Signal]:
-    # Yelp requires API key; TripAdvisor public API generally requires onboarding.
-    yelp_key = os.getenv("YELP_API_KEY")
-    if not yelp_key:
-        return []
-
-    headers = {"Authorization": f"Bearer {yelp_key}"}
-    signals: List[Signal] = []
-    for cafe in cafes:
-        try:
-            resp = requests.get(
-                "https://api.yelp.com/v3/businesses/search",
-                params={"term": cafe.name, "location": "Prahran VIC"},
-                headers=headers,
-                timeout=20,
-            )
-            if resp.status_code != 200:
-                stats.mark_fail()
-                continue
-
-            businesses = resp.json().get("businesses", [])
-            if businesses:
-                b = businesses[0]
-                rating = b.get("rating")
-                count = b.get("review_count")
-                signals.append(
-                    Signal(
-                        source="yelp_tripadvisor",
-                        cafe=cafe.name,
-                        kind="rating_snapshot",
-                        summary=f"Yelp rating {rating} from {count} reviews.",
-                        impact=6 if rating and rating < 4.0 else 4,
-                        confidence=8.0,
-                    )
-                )
-            stats.mark_success()
-        except requests.RequestException:
-            stats.mark_fail()
-    return signals
-
-
 def fetch_competitor_url_signals(stats: SourceStats) -> List[Signal]:
     # Optional mapping from env var:
     # {"Cafe Name":"https://example.com/menu"}
@@ -320,6 +739,21 @@ def fetch_competitor_url_signals(stats: SourceStats) -> List[Signal]:
         return []
 
     signals: List[Signal] = []
+    keywords = [
+        "special",
+        "new menu",
+        "menu",
+        "price",
+        "limited time",
+        "booking",
+        "book now",
+        "functions",
+        "bistro",
+        "events",
+        "live music",
+        "happy hour",
+        "sports bar",
+    ]
     for cafe_name, url in mapping.items():
         try:
             resp = requests.get(url, timeout=20)
@@ -329,7 +763,7 @@ def fetch_competitor_url_signals(stats: SourceStats) -> List[Signal]:
 
             text = re.sub(r"\s+", " ", resp.text.lower())
             snippets = []
-            for keyword in ["special", "new menu", "price", "limited time", "booking"]:
+            for keyword in keywords:
                 if keyword in text:
                     snippets.append(keyword)
             if snippets:
@@ -426,13 +860,22 @@ def build_report(
     comp_signals = [s for s in new_signals if s.cafe in comp_names]
     target_signals = [s for s in new_signals if s.cafe in target_names]
 
-    for s in comp_signals[:20]:
+    for s in sorted(comp_signals, key=lambda s: (s.impact, s.confidence), reverse=True)[:20]:
         competitor_delta.append([s.cafe, s.summary[:180], int(max(1, min(10, s.impact)))])
 
-    comp_issues = [s for s in comp_signals if s.impact >= 7]
+    prioritized_comp_signals = sorted(
+        comp_signals,
+        key=lambda s: (1 if s.kind == "review_issue" else 0, s.impact, s.confidence),
+        reverse=True,
+    )
+    comp_issues = prioritized_comp_signals
     default_issue = "Data Unavailable" if not comp_issues else comp_issues[0].summary
     for t in targets:
-        relevant = [s for s in target_signals if s.cafe == t.name]
+        relevant = sorted(
+            [s for s in target_signals if s.cafe == t.name],
+            key=lambda s: (1 if s.kind == "review_strength" else 0, s.impact, s.confidence),
+            reverse=True,
+        )
         if relevant:
             gap = relevant[0].summary[:120]
             fallback_hook = f"Position {t.name} as the alternative when competitors show: {default_issue[:90]}"
@@ -479,15 +922,16 @@ def run() -> int:
     report_path = os.path.join(root, "weekly_intel_report.json")
     dashboard_path = os.path.join(root, "Dashboard_Summary.md")
     noise_log_path = os.path.join(root, "noise_log.json")
+    diagnostics_path = os.path.join(root, "source_diagnostics.json")
 
-    last_scan_date, targets, competition = parse_plan(plan_path)
+    last_scan_date, location_focus, targets, competition = parse_plan(plan_path)
     all_cafes = targets + competition
 
     stats = SourceStats()
     signals: List[Signal] = []
-    signals.extend(fetch_google_maps_signals(all_cafes, stats))
+    google_diagnostics: List[Dict[str, object]] = []
+    signals.extend(fetch_google_maps_signals(all_cafes, location_focus, stats, google_diagnostics))
     signals.extend(fetch_reddit_signals(all_cafes, last_scan_date, stats))
-    signals.extend(fetch_yelp_tripadvisor_signals(all_cafes, stats))
     signals.extend(fetch_competitor_url_signals(stats))
 
     kept, noise = filter_confident_signals(signals)
@@ -512,6 +956,17 @@ def run() -> int:
     ]
     with open(noise_log_path, "w", encoding="utf-8") as f:
         json.dump(noise_payload, f, indent=2)
+
+    diagnostics_payload = {
+        "source_stats": {
+            "success": stats.success,
+            "fail": stats.fail,
+            "failure_ratio": stats.failure_ratio,
+        },
+        "google_maps": google_diagnostics,
+    }
+    with open(diagnostics_path, "w", encoding="utf-8") as f:
+        json.dump(diagnostics_payload, f, indent=2)
 
     write_dashboard(report, dashboard_path)
     return 0

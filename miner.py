@@ -14,7 +14,7 @@ if not api_key:
 # Trying 'gemini-1.5-flash'
 url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent?key={api_key}"
 
-prompt = "Explain why Tall Timber might be considered an 'underdog' compared to Journeyman in the Melbourne cafe scene. Compare their reputation, history, or vibe."
+prompt = "Explain why Pinsent Hotel might be considered an 'underdog' compared to Old Town and Country Tavern, Wangaratta Club, and Wangaratta RSL in the Wangaratta pub scene. Compare reputation, history, or vibe."
 
 payload = {
     "contents": [{

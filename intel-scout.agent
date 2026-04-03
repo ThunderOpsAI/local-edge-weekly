@@ -3,10 +3,10 @@
 - Tools: Enable 'Browser', 'Knowledge', and 'Artifacts'.
 - Execution Logic:
     1. Read 'last_scan_date' and 'known_competitors' (and Targets/Competition lists) from the local 'PLAN.md'.
-    2. Use the Browser Tool to visit Reddit, local directories (e.g., Yelp), and competitor websites/maps listings.
-    3. Crawl for recent reviews (dating back to the 'last_scan_date' or last 7 days) for ALL listed cafes (Targets and Competition).
+    2. Use the Browser Tool to visit Reddit and competitor websites/maps listings.
+    3. Crawl for recent reviews and venue signals (dating back to the 'last_scan_date' or last 7 days) for ALL listed pubs (Targets and Competition).
     4. Generate a "Vibe vs. Value" score for the Targets compared to the Competition based on sentiment and keywords.
-    5. Identify specific "Intent Signals" and "Service Failures" at the Competition (e.g., "Wait times at Journeyman were too long", complaints, pricing changes) that the Targets could exploit.
+    5. Identify specific "Intent Signals" and "Service Failures" at the Competition (e.g., slow meals, limited atmosphere, pricing changes) that the Targets could exploit.
     6. Ignore leads/reviews dated significantly before the 'last_scan_date' if specified.
     7. Output: Save specific results as a structured JSON file named 'weekly_intel_report.json' in the project root.
 - Constraints: Avoid login walls unless credentials exist in the 'vault'. Prioritize official APIs where available. Use an Australian exit node/IP if possible to ensure local search relevance.

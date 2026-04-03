@@ -14,7 +14,7 @@ schedule: Every Sunday
     *   Wait for subagents to complete their tasks.
     *   Read the consolidated report: `weekly_intel_report.json`.
 4.  **Analysis**:
-    *   **Competitive Gap Analysis**: Compare the 3 Targets (Tall Timber, Crooked Letters, Reverie) against the 5 Market Leaders (Journeyman, etc.) based on the data in the report.
+    *   **Competitive Gap Analysis**: Compare the Wangaratta Target (Pinsent Hotel) against the Wangaratta Competition (Old Town and Country Tavern, Wangaratta Club, Wangaratta RSL) based on the data in the report.
 5.  **Reporting**:
     *   Generate a `Dashboard_Summary.md` file.
     *   Highlight the top 3 "Sales Hooks" for the week derived from the gap analysis.

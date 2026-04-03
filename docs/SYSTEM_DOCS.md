@@ -4,7 +4,7 @@
 
 \## 1. Agent Charter (Canonical Mission)
 
-\*\*Mission:\*\* Produce weekly competitive intelligence reports for local service businesses (Chapel St Coffee Niche) by identifying performance gaps between market leaders and target underdogs.
+\*\*Mission:\*\* Produce weekly competitive intelligence reports for local service businesses (now scoped to Wangaratta pubs) by identifying performance gaps between market leaders and target underdogs.
 
 
 
@@ -80,15 +80,13 @@ Agents are permitted to access ONLY:
 
 1\. \*\*Google Maps API / Places:\*\* (Ratings, review text, business hours).
 
-2\. \*\*Reddit API:\*\* (r/melbourne, r/prahran, r/coffee).
+2\. \*\*Reddit API:\*\* (r/melbourne, r/australia, r/coffee).
 
-3\. \*\*Yelp/TripAdvisor:\*\* (Customer sentiment trends).
-
-4\. \*\*Target/Competitor URLs:\*\* (Direct pricing and menu changes).
+3\. \*\*Target/Competitor URLs:\*\* (Direct pricing, menu, events, booking, and venue updates).
 
 
 
-\*Constraint: If data is missing from these four, return 'Data Unavailable'. Do not search the general web.\*
+\*Constraint: If data is missing from these three, return 'Data Unavailable'. Do not search the general web.\*
 
 
 

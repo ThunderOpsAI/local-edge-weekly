@@ -17,9 +17,10 @@ model = genai.GenerativeModel('gemini-2.0-flash')
 
 test_prompt = """
 Handshake Test: Verify project context for 'Local Edge Weekly'.
-Market: Chapel St, Prahran.
-Targets: Tall Timber, Crooked Letters, Reverie Cafe.
-Task: Briefly identify ONE unique selling point for each Target based on your internal knowledge.
+Market: Wangaratta.
+Target: Pinsent Hotel.
+Competition: Old Town and Country Tavern, Wangaratta Club, Wangaratta RSL.
+Task: Briefly identify ONE unique selling point for the Target based on your internal knowledge.
 """
 
 try:
