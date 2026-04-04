@@ -1,0 +1,48 @@
+{
+  "id": "pub",
+  "name": "Pub and Hospitality Venue",
+  "description": "Profile for pubs, taverns, clubs, and hospitality venues.",
+  "search_terms": [
+    "pub",
+    "tavern",
+    "hotel",
+    "club",
+    "rsl",
+    "bistro"
+  ],
+  "target_strength_topics": [
+    "friendly staff",
+    "strong meals",
+    "good value",
+    "strong atmosphere",
+    "drink selection"
+  ],
+  "competitor_issue_topics": [
+    "slow service",
+    "staff friction",
+    "pricing complaints",
+    "food quality issues",
+    "crowding or noise",
+    "booking friction"
+  ],
+  "website_keywords": [
+    "special",
+    "menu",
+    "price",
+    "booking",
+    "book now",
+    "functions",
+    "bistro",
+    "events",
+    "live music",
+    "happy hour",
+    "sports bar"
+  ],
+  "coverage_threshold": 0.4,
+  "max_competitors": 5,
+  "report_labels": {
+    "opportunities": "Opportunities",
+    "strengths": "Target Strengths",
+    "diagnostics": "Source Diagnostics"
+  }
+}

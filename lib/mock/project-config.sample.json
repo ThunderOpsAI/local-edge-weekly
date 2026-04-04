@@ -1,0 +1,24 @@
+{
+  "last_scan_date": "2026-04-03",
+  "location_focus": "Wangaratta VIC",
+  "targets": [
+    {
+      "name": "Pinsent Hotel",
+      "focus": "Use Google review strengths and website context to identify positioning opportunities."
+    }
+  ],
+  "competition": [
+    {
+      "name": "Old Town and Country Tavern",
+      "focus": "Track pricing complaints, menu signals, and operational friction."
+    },
+    {
+      "name": "Wangaratta Club",
+      "focus": "Track offer mix, website updates, and review sentiment."
+    },
+    {
+      "name": "Wangaratta RSL",
+      "focus": "Track events, booking signals, and venue strengths."
+    }
+  ]
+}

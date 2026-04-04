@@ -9,3 +9,9 @@ __pycache__/
 venv/
 env/
 .venv/
+
+# Node and build outputs
+node_modules/
+.next/
+out/
+*.log

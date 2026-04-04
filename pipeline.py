@@ -153,6 +153,49 @@ def parse_plan(plan_path: str) -> Tuple[datetime, str, List[Cafe], List[Cafe]]:
     return last_scan_date, location_focus, targets, competition
 
 
+def parse_project_config(config_path: str) -> Tuple[datetime, str, List[Cafe], List[Cafe]]:
+    with open(config_path, "r", encoding="utf-8") as f:
+        payload = json.load(f)
+
+    if not isinstance(payload, dict):
+        raise ValueError("Project config must be a JSON object")
+
+    last_scan_raw = payload.get("last_scan_date")
+    location_focus = payload.get("location_focus")
+    targets_raw = payload.get("targets")
+    competition_raw = payload.get("competition")
+
+    if not isinstance(last_scan_raw, str):
+        raise ValueError("Project config requires string field `last_scan_date`")
+    if not isinstance(location_focus, str) or not location_focus.strip():
+        raise ValueError("Project config requires string field `location_focus`")
+    if not isinstance(targets_raw, list) or not isinstance(competition_raw, list):
+        raise ValueError("Project config requires list fields `targets` and `competition`")
+
+    last_scan_date = datetime.strptime(last_scan_raw, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+
+    def parse_cafe_list(items: List[object], kind: str) -> List[Cafe]:
+        cafes: List[Cafe] = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise ValueError(f"{kind} entries must be objects")
+            name = item.get("name")
+            focus = item.get("focus", "")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"{kind} entries require `name`")
+            if not isinstance(focus, str):
+                raise ValueError(f"{kind} entry focus must be a string")
+            cafes.append(Cafe(name=name.strip(), focus=focus.strip(), kind=kind))
+        return cafes
+
+    targets = parse_cafe_list(targets_raw, "target")
+    competition = parse_cafe_list(competition_raw, "competition")
+    if not targets or not competition:
+        raise ValueError("Project config must include at least one target and one competitor")
+
+    return last_scan_date, location_focus.strip(), targets, competition
+
+
 def score_confidence_from_text(text: str) -> float:
     # Conservative heuristic so low-quality matches are filtered out.
     length_bonus = min(len(text) / 200.0, 2.0)
@@ -923,8 +966,17 @@ def run() -> int:
     dashboard_path = os.path.join(root, "Dashboard_Summary.md")
     noise_log_path = os.path.join(root, "noise_log.json")
     diagnostics_path = os.path.join(root, "source_diagnostics.json")
+    project_config_path = os.getenv("PROJECT_CONFIG_PATH")
 
-    last_scan_date, location_focus, targets, competition = parse_plan(plan_path)
+    if project_config_path:
+        resolved_config_path = (
+            project_config_path
+            if os.path.isabs(project_config_path)
+            else os.path.join(root, project_config_path)
+        )
+        last_scan_date, location_focus, targets, competition = parse_project_config(resolved_config_path)
+    else:
+        last_scan_date, location_focus, targets, competition = parse_plan(plan_path)
     all_cafes = targets + competition
 
     stats = SourceStats()
