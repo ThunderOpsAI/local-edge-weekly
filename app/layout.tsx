@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 
-import { getAuthenticatedUser } from "@/lib/auth";
+import { getAccountContext, getAuthenticatedUser } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -10,7 +10,7 @@ export const metadata: Metadata = {
 };
 
 export default async function RootLayout({ children }: { children: React.ReactNode }) {
-  const user = await getAuthenticatedUser();
+  const [user, context] = await Promise.all([getAuthenticatedUser(), getAccountContext()]);
 
   return (
     <html lang="en">
@@ -28,6 +28,11 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                     <Link href="/" className="button button-secondary">
                       Home
                     </Link>
+                    {context?.role === "owner" ? (
+                      <Link href="/admin" className="button button-secondary">
+                        Admin
+                      </Link>
+                    ) : null}
                     <Link href="/projects/new" className="button button-primary">
                       New Project
                     </Link>

@@ -37,7 +37,9 @@ Suggested first-time setup:
 2. Open the SQL Editor.
 3. Paste the contents of `supabase/migrations/20260404_initial_schema.sql`.
 4. Run the migration.
-5. Copy these values into `.env.local` for the Next app:
+5. If you are updating an existing project, also run:
+   - `supabase/migrations/20260405_run_diagnostics_payload.sql`
+6. Copy these values into `.env.local` for the Next app:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
@@ -99,6 +101,9 @@ The callback route creates the first `accounts` and `users` membership row for e
 - Projects are account-owned and tenant-scoped through Supabase Auth + RLS.
 - Project runs now queue through the API, then dispatch from the database queue through an internal worker route that persists reports, diagnostics, checkpoints, and analysis runs.
 - The dispatcher can be called safely again to recover queued work, and it will requeue stale in-progress runs automatically.
+- Report detail pages now live at `/reports/:reportId`.
+- Owner accounts now get a lightweight `/admin` workspace for recent run and report oversight.
+- Richer diagnostics are now stored directly on `run_diagnostics.detail_payload` when the latest migration is applied.
 - If your machine has a non-standard Python path, set `PYTHON_BIN` in `.env.local`.
 - In production, set a strong `INTERNAL_JOB_SECRET` so only trusted internal calls can start the worker route.
 - Approved reports can send real email through Resend when `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured.

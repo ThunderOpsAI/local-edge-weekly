@@ -105,6 +105,7 @@ export interface ReportRecord {
   id: string;
   runId: string;
   projectId: string;
+  projectName?: string;
   status: "draft" | "approved" | "archived";
   coverageScore: number;
   createdAt: string;
@@ -182,6 +183,35 @@ export interface TrendDeltaCard {
 export interface ProjectTrendData {
   snapshot: TrendSnapshot;
   deltas: TrendDeltaCard[];
+}
+
+export interface AdminRunRow {
+  id: string;
+  projectId: string;
+  projectName: string;
+  status: ProjectLifecycleStatus;
+  stage: string;
+  coverageScore: number;
+  createdAt: string;
+}
+
+export interface AdminReportRow {
+  id: string;
+  projectId: string;
+  projectName: string;
+  status: "draft" | "approved" | "archived";
+  coverageScore: number;
+  createdAt: string;
+}
+
+export interface AdminOverviewData {
+  account: AccountSummary;
+  projectsCount: number;
+  runsInFlight: number;
+  failedRuns: number;
+  approvedReports: number;
+  recentRuns: AdminRunRow[];
+  recentReports: AdminReportRow[];
 }
 
 export interface ComparisonRow {

@@ -454,6 +454,7 @@ async function persistDiagnostics(
         signals_found: entry.resolved ? 1 : 0,
         signals_expected: 1,
         error_message: entry.attempts[entry.attempts.length - 1]?.error_message ?? null,
+        detail_payload: entry,
       };
     })
     .filter(Boolean);

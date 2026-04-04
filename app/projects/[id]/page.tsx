@@ -98,6 +98,18 @@ export default async function ProjectDashboardPage({
                 <ReportApprovalButton reportId={reportRecord.id} />
               </article>
             ) : null}
+            {reportRecord ? (
+              <article className="panel">
+                <p className="eyebrow">Report Link</p>
+                <h3>Open the full report detail page</h3>
+                <p className="muted">
+                  Use the permalink view for sharing, approval, and a cleaner record of what was sent.
+                </p>
+                <Link href={`/reports/${reportRecord.id}`} className="button button-secondary">
+                  Open report detail
+                </Link>
+              </article>
+            ) : null}
           </div>
           <PlaybookList actions={playbook} />
         </div>

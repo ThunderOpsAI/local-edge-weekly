@@ -4,7 +4,7 @@ import { createServerClient } from "@supabase/ssr";
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
-const PROTECTED_PREFIXES = ["/projects", "/api"];
+const PROTECTED_PREFIXES = ["/projects", "/api", "/admin", "/reports"];
 const INTERNAL_JOB_PREFIX = "/api/internal";
 
 function isProtectedPath(pathname: string) {
