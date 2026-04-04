@@ -42,6 +42,9 @@ Suggested first-time setup:
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `INTERNAL_JOB_SECRET`
+   - `APP_BASE_URL`
+   - Optional: `RESEND_API_KEY`
+   - Optional: `RESEND_FROM_EMAIL`
    - Optional: `PYTHON_BIN` if your Python executable is not available as `python`
 
 You can start from `.env.local.example` and rename it to `.env.local`.
@@ -94,6 +97,8 @@ The callback route creates the first `accounts` and `users` membership row for e
 - Google Maps Place Details is used for ratings, review-derived strengths/issues, hours, and website context.
 - Magic-link auth is now required for `/projects` and `/api` routes.
 - Projects are account-owned and tenant-scoped through Supabase Auth + RLS.
-- Project runs now queue through the API, then process in a background worker route that persists reports, diagnostics, checkpoints, and analysis runs.
+- Project runs now queue through the API, then dispatch from the database queue through an internal worker route that persists reports, diagnostics, checkpoints, and analysis runs.
+- The dispatcher can be called safely again to recover queued work, and it will requeue stale in-progress runs automatically.
 - If your machine has a non-standard Python path, set `PYTHON_BIN` in `.env.local`.
 - In production, set a strong `INTERNAL_JOB_SECRET` so only trusted internal calls can start the worker route.
+- Approved reports can send real email through Resend when `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured.

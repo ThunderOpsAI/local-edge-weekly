@@ -3,7 +3,14 @@ import { NextResponse } from "next/server";
 import { buildApiLoginRedirect } from "@/lib/api-auth";
 import { approveReportSchema } from "@/lib/api-contract";
 import { getAccountContext } from "@/lib/auth";
-import { approveReport, getReportById } from "@/lib/repository";
+import { sendApprovedReportEmail } from "@/lib/email";
+import {
+  approveReport,
+  getProject,
+  getReportById,
+  parseCompetitorDeltas,
+  parseLeads,
+} from "@/lib/repository";
 
 export async function PATCH(
   request: Request,
@@ -33,5 +40,29 @@ export async function PATCH(
     return NextResponse.json({ error: "Unable to approve report" }, { status: 500 });
   }
 
-  return NextResponse.json({ data: report });
+  const project = await getProject(report.projectId);
+  if (!project) {
+    return NextResponse.json({ error: "Project not found for approved report" }, { status: 500 });
+  }
+
+  const leads = parseLeads(report.body);
+  const deltas = parseCompetitorDeltas(report.body);
+
+  const emailResult = await sendApprovedReportEmail({
+    to: context.email,
+    project,
+    report,
+    leads,
+    deltas,
+  }).catch((error) => ({
+    delivered: false as const,
+    reason: error instanceof Error ? error.message : "Email delivery failed",
+  }));
+
+  return NextResponse.json({
+    data: {
+      report,
+      email: emailResult,
+    },
+  });
 }

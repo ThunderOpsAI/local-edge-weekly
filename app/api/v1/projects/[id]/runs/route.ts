@@ -65,7 +65,7 @@ export async function POST(
     }
 
     const result = await enqueueProjectRun(params.id, context);
-    const workerUrl = new URL("/api/internal/process-run", request.url);
+    const workerUrl = new URL("/api/internal/dispatch-runs", request.url);
 
     void fetch(workerUrl, {
       method: "POST",
@@ -73,10 +73,10 @@ export async function POST(
         "Content-Type": "application/json",
         "x-internal-job-secret": internalJobSecret,
       },
-      body: JSON.stringify({ runId: result.runId }),
+      body: JSON.stringify({ limit: 1 }),
       cache: "no-store",
     }).catch((error) => {
-      console.error("Failed to trigger background run worker", error);
+      console.error("Failed to trigger background run dispatcher", error);
     });
 
     return NextResponse.json(

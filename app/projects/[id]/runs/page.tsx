@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { notFound } from "next/navigation";
 
 import { getStatusTone, StatusChip } from "@/components/status-chip";
@@ -28,7 +29,7 @@ export default async function ProjectRunsPage({
 
       <div className="panel run-list">
         {runs.map((run) => (
-          <div key={run.id} className="run-row">
+          <Link key={run.id} href={`/projects/${project.id}/runs/${run.id}`} className="run-row run-row-link">
             <div>
               <StatusChip tone={getStatusTone(run.status)} label={run.status} />
               <p className="muted">{run.createdAt}</p>
@@ -40,7 +41,7 @@ export default async function ProjectRunsPage({
                 {run.durationLabel ? ` - ${run.durationLabel}` : ""}
               </p>
             </div>
-          </div>
+          </Link>
         ))}
       </div>
     </section>

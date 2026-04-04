@@ -13,6 +13,7 @@ const PYTHON_BIN = process.env.PYTHON_BIN ?? "python";
 const PROJECT_CONFIG_NAME = "project-config.json";
 const OUTPUT_DIR_NAME = "pipeline-output";
 const COVERAGE_THRESHOLD = 0.4;
+const STALE_RUN_MINUTES = 20;
 
 interface ProjectRow {
   id: string;
@@ -49,6 +50,11 @@ interface PersistedRunResult {
 interface QueuedRunResult {
   runId: string;
   status: "queued";
+}
+
+interface DispatchResult {
+  processedRunIds: string[];
+  requeuedRunIds: string[];
 }
 
 function getAdminClientOrThrow() {
@@ -177,6 +183,68 @@ async function loadRun(
   }
 
   return (run as AnalysisRunRow | null) ?? null;
+}
+
+async function claimQueuedRun(supabase: SupabaseClient): Promise<AnalysisRunRow | null> {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    const { data: candidate, error: candidateError } = await supabase
+      .from("analysis_runs")
+      .select("id, project_id, account_id, status, stage, started_at")
+      .eq("status", "queued")
+      .order("created_at", { ascending: true })
+      .limit(1)
+      .maybeSingle();
+
+    if (candidateError) {
+      throw candidateError;
+    }
+
+    if (!candidate) {
+      return null;
+    }
+
+    const { data: claimed, error: claimError } = await supabase
+      .from("analysis_runs")
+      .update({
+        status: "running",
+        stage: "dispatching",
+        started_at: candidate.started_at ?? new Date().toISOString(),
+      })
+      .eq("id", candidate.id)
+      .eq("status", "queued")
+      .select("id, project_id, account_id, status, stage, started_at")
+      .maybeSingle();
+
+    if (claimError) {
+      throw claimError;
+    }
+
+    if (claimed) {
+      return claimed as AnalysisRunRow;
+    }
+  }
+
+  return null;
+}
+
+async function requeueStaleRuns(supabase: SupabaseClient) {
+  const threshold = new Date(Date.now() - STALE_RUN_MINUTES * 60_000).toISOString();
+  const { data, error } = await supabase
+    .from("analysis_runs")
+    .update({
+      status: "queued",
+      stage: "queued",
+    })
+    .eq("status", "running")
+    .lt("started_at", threshold)
+    .is("completed_at", null)
+    .select("id");
+
+  if (error) {
+    throw error;
+  }
+
+  return ((data ?? []) as Array<{ id: string }>).map((row) => row.id);
 }
 
 async function findInFlightRunId(
@@ -525,6 +593,14 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
     };
   }
 
+  if (run.status === "queued") {
+    await updateRun(supabase, runId, {
+      status: "running",
+      stage: "dispatching",
+      started_at: run.started_at ?? new Date().toISOString(),
+    });
+  }
+
   const loaded = await loadProject(supabase, run.project_id, run.account_id);
   if (!loaded) {
     throw new Error("Project not found");
@@ -606,4 +682,25 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
   } finally {
     await rm(tempRoot, { recursive: true, force: true });
   }
+}
+
+export async function dispatchQueuedRuns(limit = 1): Promise<DispatchResult> {
+  const supabase = getAdminClientOrThrow();
+  const requeuedRunIds = await requeueStaleRuns(supabase);
+  const processedRunIds: string[] = [];
+
+  for (let index = 0; index < limit; index += 1) {
+    const claimed = await claimQueuedRun(supabase);
+    if (!claimed) {
+      break;
+    }
+
+    await processQueuedRun(claimed.id);
+    processedRunIds.push(claimed.id);
+  }
+
+  return {
+    processedRunIds,
+    requeuedRunIds,
+  };
 }

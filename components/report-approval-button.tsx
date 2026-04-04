@@ -28,7 +28,7 @@ export function ReportApprovalButton({ reportId, disabled = false }: ReportAppro
       });
 
       const payload = (await response.json().catch(() => null)) as
-        | { data?: { id?: string }; error?: string }
+        | { data?: { report?: { id?: string }; email?: { delivered?: boolean; reason?: string } }; error?: string }
         | null;
 
       if (!response.ok) {
@@ -36,7 +36,13 @@ export function ReportApprovalButton({ reportId, disabled = false }: ReportAppro
         return;
       }
 
-      setNotice("Report approved.");
+      if (payload?.data?.email?.delivered) {
+        setNotice("Report approved and email delivered.");
+      } else if (payload?.data?.email?.reason === "missing_config") {
+        setNotice("Report approved. Email was skipped because Resend is not configured yet.");
+      } else {
+        setNotice("Report approved.");
+      }
       router.refresh();
     });
   }
