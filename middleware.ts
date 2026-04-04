@@ -5,12 +5,17 @@ const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 const PROTECTED_PREFIXES = ["/projects", "/api"];
+const INTERNAL_JOB_PREFIX = "/api/internal";
 
 function isProtectedPath(pathname: string) {
   return PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`));
 }
 
 export async function middleware(request: NextRequest) {
+  if (request.nextUrl.pathname === INTERNAL_JOB_PREFIX || request.nextUrl.pathname.startsWith(`${INTERNAL_JOB_PREFIX}/`)) {
+    return NextResponse.next();
+  }
+
   if (!supabaseUrl || !supabaseAnonKey) {
     return NextResponse.next();
   }

@@ -962,10 +962,15 @@ def write_dashboard(report: Dict, output_path: str) -> None:
 def run() -> int:
     root = os.path.dirname(os.path.abspath(__file__))
     plan_path = os.path.join(root, "PLAN.md")
-    report_path = os.path.join(root, "weekly_intel_report.json")
-    dashboard_path = os.path.join(root, "Dashboard_Summary.md")
-    noise_log_path = os.path.join(root, "noise_log.json")
-    diagnostics_path = os.path.join(root, "source_diagnostics.json")
+    output_dir = os.getenv("PIPELINE_OUTPUT_DIR", root)
+    if not os.path.isabs(output_dir):
+        output_dir = os.path.join(root, output_dir)
+    os.makedirs(output_dir, exist_ok=True)
+
+    report_path = os.path.join(output_dir, "weekly_intel_report.json")
+    dashboard_path = os.path.join(output_dir, "Dashboard_Summary.md")
+    noise_log_path = os.path.join(output_dir, "noise_log.json")
+    diagnostics_path = os.path.join(output_dir, "source_diagnostics.json")
     project_config_path = os.getenv("PROJECT_CONFIG_PATH")
 
     if project_config_path:

@@ -12,12 +12,18 @@ import type {
   OpportunityCard,
   PlanType,
   PlaybookAction,
+  ProjectTrendData,
   ProjectLifecycleStatus,
   ProjectSummary,
+  ReportRecord,
   ReportLead,
   RunCadence,
+  RunCheckpoint,
+  RunDetail,
   RunSummary,
   SourceDiagnostics,
+  TargetSummary,
+  TrendDeltaCard,
   TrendSnapshot,
   TrendSeries,
   WeeklyIntelReport,
@@ -96,9 +102,12 @@ interface AnalysisRunRow {
 
 interface ReportRow {
   id: string;
+  run_id: string;
   project_id: string;
+  status: "draft" | "approved" | "archived";
   coverage_score: number | null;
   body: WeeklyIntelReport;
+  approved_at?: string | null;
   created_at: string;
 }
 
@@ -112,6 +121,15 @@ interface RunDiagnosticRow {
   signals_found: number;
   signals_expected: number | null;
   error_message: string | null;
+  created_at: string;
+}
+
+interface RunCheckpointRow {
+  id: string;
+  run_id: string;
+  stage: string;
+  status: "completed" | "failed" | "skipped";
+  payload: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -179,6 +197,56 @@ function mapPlan(plan: string | null | undefined): PlanType {
 
 function getPlanSettings(plan: PlanType) {
   return PLAN_SETTINGS[plan];
+}
+
+function mapTargetSummary(target: ProjectTargetRow): TargetSummary {
+  return {
+    id: target.id,
+    url: target.url,
+    name: displayTargetName(target),
+    role: target.role,
+    isPrimary: target.is_primary,
+    placeId: target.resolved_place_id,
+  };
+}
+
+function mapReportRecord(row: ReportRow): ReportRecord {
+  return {
+    id: row.id,
+    runId: row.run_id,
+    projectId: row.project_id,
+    status: row.status,
+    coverageScore: row.coverage_score ?? 0,
+    createdAt: row.created_at,
+    approvedAt: row.approved_at ?? null,
+    body: row.body,
+  };
+}
+
+function formatDurationLabel(
+  startedAt?: string | null,
+  completedAt?: string | null,
+  status?: ProjectLifecycleStatus,
+) {
+  if (!startedAt) {
+    return status === "queued" ? "Waiting for worker" : "Pending";
+  }
+
+  if (!completedAt) {
+    return "In progress";
+  }
+
+  const durationMs = new Date(completedAt).getTime() - new Date(startedAt).getTime();
+  if (!Number.isFinite(durationMs) || durationMs <= 0) {
+    return "Completed";
+  }
+
+  const minutes = Math.round(durationMs / 60000);
+  if (minutes <= 1) {
+    return "Completed in under a minute";
+  }
+
+  return `Completed in ${minutes} min`;
 }
 
 function buildAccountSummary(account: AccountRow): AccountSummary {
@@ -454,6 +522,19 @@ function mapProjectSummary(
   };
 }
 
+function diagnosticsFromCheckpointPayload(payload: Record<string, unknown> | null): SourceDiagnostics | null {
+  if (!payload) {
+    return null;
+  }
+
+  const diagnostics = payload.diagnostics as SourceDiagnostics | undefined;
+  if (!diagnostics?.google_maps || !diagnostics.source_stats) {
+    return null;
+  }
+
+  return diagnostics;
+}
+
 async function getSupabaseAccount(accountId: string): Promise<AccountSummary | null> {
   const supabase = getSupabaseServerClient();
   if (!supabase) {
@@ -568,7 +649,7 @@ async function getLatestReportsByProject(accountId: string, projectIds: string[]
 
   const { data, error } = await supabase
     .from("reports")
-    .select("id, project_id, coverage_score, body, created_at")
+    .select("id, run_id, project_id, status, coverage_score, body, approved_at, created_at")
     .eq("account_id", accountId)
     .in("project_id", projectIds)
     .order("created_at", { ascending: false });
@@ -585,6 +666,36 @@ async function getLatestReportsByProject(accountId: string, projectIds: string[]
   }
 
   return latestReports;
+}
+
+async function getRunCheckpoints(runIds: string[]) {
+  if (runIds.length === 0) {
+    return new Map<string, RunCheckpointRow[]>();
+  }
+
+  const supabase = getSupabaseServerClient();
+  if (!supabase) {
+    return new Map<string, RunCheckpointRow[]>();
+  }
+
+  const { data, error } = await supabase
+    .from("run_stage_checkpoints")
+    .select("id, run_id, stage, status, payload, created_at")
+    .in("run_id", runIds)
+    .order("created_at", { ascending: true });
+
+  if (error) {
+    throw error;
+  }
+
+  const checkpointsByRun = new Map<string, RunCheckpointRow[]>();
+  for (const row of (data ?? []) as RunCheckpointRow[]) {
+    const collection = checkpointsByRun.get(row.run_id) ?? [];
+    collection.push(row);
+    checkpointsByRun.set(row.run_id, collection);
+  }
+
+  return checkpointsByRun;
 }
 
 export async function getAccountSummary(): Promise<AccountSummary | null> {
@@ -739,7 +850,165 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectS
   );
 }
 
-export async function getLatestReport(projectId: string): Promise<WeeklyIntelReport | null> {
+export async function updateProject(
+  projectId: string,
+  input: { name: string; industry: string; location: string },
+): Promise<ProjectSummary | null> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("projects")
+    .update({
+      name: input.name,
+      industry: input.industry,
+      location: input.location,
+    })
+    .eq("id", projectId)
+    .eq("account_id", context.accountId)
+    .is("archived_at", null)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  return getProject(projectId);
+}
+
+export async function archiveProject(projectId: string): Promise<boolean> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return false;
+  }
+
+  const { data, error } = await supabase
+    .from("projects")
+    .update({ archived_at: new Date().toISOString() })
+    .eq("id", projectId)
+    .eq("account_id", context.accountId)
+    .is("archived_at", null)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return Boolean(data?.id);
+}
+
+export async function listProjectTargets(projectId: string): Promise<TargetSummary[]> {
+  const context = await getAccountContext();
+  if (!context) {
+    return [];
+  }
+
+  const project = await getProject(projectId);
+  if (!project) {
+    return [];
+  }
+
+  const targets = await getSupabaseTargets([projectId]);
+  return targets
+    .sort((left, right) => Number(right.is_primary) - Number(left.is_primary))
+    .map(mapTargetSummary);
+}
+
+export async function addProjectTarget(
+  projectId: string,
+  input: { url: string; role: "primary" | "competitor" },
+): Promise<TargetSummary | null> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return null;
+  }
+
+  const project = await getProject(projectId);
+  if (!project) {
+    return null;
+  }
+
+  if (input.role === "competitor") {
+    const settings = getPlanSettings(project.plan);
+    if (project.competitors.length >= settings.competitorLimit) {
+      throw new Error(`This plan allows up to ${settings.competitorLimit} competitors.`);
+    }
+  }
+
+  if (input.role === "primary") {
+    const { error: demoteError } = await supabase
+      .from("project_targets")
+      .update({ is_primary: false, role: "competitor" })
+      .eq("project_id", projectId)
+      .eq("is_primary", true);
+
+    if (demoteError) {
+      throw demoteError;
+    }
+  }
+
+  const { data, error } = await supabase
+    .from("project_targets")
+    .insert({
+      project_id: projectId,
+      url: input.url,
+      role: input.role,
+      is_primary: input.role === "primary",
+    })
+    .select("id, project_id, url, role, resolved_name, resolved_place_id, is_primary, created_at")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return mapTargetSummary(data as ProjectTargetRow);
+}
+
+export async function deleteProjectTarget(projectId: string, targetId: string): Promise<boolean> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return false;
+  }
+
+  const targets = await getSupabaseTargets([projectId]);
+  const target = targets.find((entry) => entry.id === targetId);
+  if (!target) {
+    return false;
+  }
+
+  if (target.is_primary) {
+    throw new Error("Primary targets cannot be deleted. Add a new primary target first.");
+  }
+
+  const { data, error } = await supabase
+    .from("project_targets")
+    .delete()
+    .eq("id", targetId)
+    .eq("project_id", projectId)
+    .select("id")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return Boolean(data?.id);
+}
+
+export async function getLatestReportRecord(projectId: string): Promise<ReportRecord | null> {
   const context = await getAccountContext();
   const supabase = getSupabaseServerClient();
   if (!context || !supabase) {
@@ -748,7 +1017,7 @@ export async function getLatestReport(projectId: string): Promise<WeeklyIntelRep
 
   const { data, error } = await supabase
     .from("reports")
-    .select("body")
+    .select("id, run_id, project_id, status, coverage_score, body, approved_at, created_at")
     .eq("account_id", context.accountId)
     .eq("project_id", projectId)
     .order("created_at", { ascending: false })
@@ -759,7 +1028,59 @@ export async function getLatestReport(projectId: string): Promise<WeeklyIntelRep
     throw error;
   }
 
-  return (data?.body as WeeklyIntelReport | undefined) ?? null;
+  return data ? mapReportRecord(data as ReportRow) : null;
+}
+
+export async function getLatestReport(projectId: string): Promise<WeeklyIntelReport | null> {
+  const record = await getLatestReportRecord(projectId);
+  return record?.body ?? null;
+}
+
+export async function getReportById(reportId: string): Promise<ReportRecord | null> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("reports")
+    .select("id, run_id, project_id, status, coverage_score, body, approved_at, created_at")
+    .eq("account_id", context.accountId)
+    .eq("id", reportId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? mapReportRecord(data as ReportRow) : null;
+}
+
+export async function approveReport(reportId: string): Promise<ReportRecord | null> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("reports")
+    .update({
+      status: "approved",
+      approved_by: context.user.id,
+      approved_at: new Date().toISOString(),
+    })
+    .eq("account_id", context.accountId)
+    .eq("id", reportId)
+    .select("id, run_id, project_id, status, coverage_score, body, approved_at, created_at")
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return data ? mapReportRecord(data as ReportRow) : null;
 }
 
 export async function getDiagnostics(projectId: string): Promise<SourceDiagnostics> {
@@ -786,7 +1107,7 @@ export async function getDiagnostics(projectId: string): Promise<SourceDiagnosti
     return buildEmptyDiagnostics();
   }
 
-  const [{ data: diagnosticsRows, error: diagnosticsError }, targets] = await Promise.all([
+  const [{ data: diagnosticsRows, error: diagnosticsError }, targets, checkpointsByRun] = await Promise.all([
     supabase
       .from("run_diagnostics")
       .select("id, run_id, account_id, target_id, source, status, signals_found, signals_expected, error_message, created_at")
@@ -794,10 +1115,18 @@ export async function getDiagnostics(projectId: string): Promise<SourceDiagnosti
       .eq("run_id", latestRun.id)
       .order("created_at", { ascending: true }),
     getSupabaseTargets([projectId]),
+    getRunCheckpoints([latestRun.id]),
   ]);
 
   if (diagnosticsError) {
     throw diagnosticsError;
+  }
+
+  const checkpoints = checkpointsByRun.get(latestRun.id) ?? [];
+  const reportCheckpoint = [...checkpoints].reverse().find((checkpoint) => checkpoint.stage === "report_generation");
+  const checkpointDiagnostics = diagnosticsFromCheckpointPayload(reportCheckpoint?.payload ?? null);
+  if (checkpointDiagnostics) {
+    return checkpointDiagnostics;
   }
 
   const rows = (diagnosticsRows ?? []) as RunDiagnosticRow[];
@@ -863,8 +1192,126 @@ export async function listRuns(projectId: string): Promise<RunSummary[]> {
     stage: run.stage ?? "queued",
     coverageScore: run.coverage_score ?? 0,
     createdAt: run.created_at,
-    durationLabel: run.completed_at && run.started_at ? "Completed" : "In progress",
+    durationLabel: formatDurationLabel(run.started_at, run.completed_at, mapRunStatus(run.status)),
   }));
+}
+
+export async function getRunDetail(runId: string): Promise<RunDetail | null> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("analysis_runs")
+    .select("id, project_id, status, stage, coverage_score, created_at, started_at, completed_at")
+    .eq("account_id", context.accountId)
+    .eq("id", runId)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  if (!data) {
+    return null;
+  }
+
+  const checkpointsByRun = await getRunCheckpoints([runId]);
+  const checkpoints = (checkpointsByRun.get(runId) ?? []).map(
+    (checkpoint): RunCheckpoint => ({
+      id: checkpoint.id,
+      stage: checkpoint.stage,
+      status: checkpoint.status,
+      payload: checkpoint.payload,
+      createdAt: checkpoint.created_at,
+    }),
+  );
+
+  const run = data as AnalysisRunRow;
+  const status = mapRunStatus(run.status);
+
+  return {
+    id: run.id,
+    projectId: run.project_id,
+    status,
+    stage: run.stage ?? "queued",
+    coverageScore: run.coverage_score ?? 0,
+    createdAt: run.created_at,
+    startedAt: run.started_at ?? null,
+    completedAt: run.completed_at ?? null,
+    durationLabel: formatDurationLabel(run.started_at, run.completed_at, status),
+    checkpoints,
+  };
+}
+
+export async function getRunDiagnosticsByRunId(runId: string): Promise<SourceDiagnostics> {
+  const detail = await getRunDetail(runId);
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!detail || !context || !supabase) {
+    return buildEmptyDiagnostics();
+  }
+
+  const [{ data: diagnosticsRows, error: diagnosticsError }, targets, checkpointsByRun] = await Promise.all([
+    supabase
+      .from("run_diagnostics")
+      .select("id, run_id, account_id, target_id, source, status, signals_found, signals_expected, error_message, created_at")
+      .eq("account_id", context.accountId)
+      .eq("run_id", runId)
+      .order("created_at", { ascending: true }),
+    getSupabaseTargets([detail.projectId]),
+    getRunCheckpoints([runId]),
+  ]);
+
+  if (diagnosticsError) {
+    throw diagnosticsError;
+  }
+
+  const checkpoints = checkpointsByRun.get(runId) ?? [];
+  const reportCheckpoint = [...checkpoints].reverse().find((checkpoint) => checkpoint.stage === "report_generation");
+  const checkpointDiagnostics = diagnosticsFromCheckpointPayload(reportCheckpoint?.payload ?? null);
+  if (checkpointDiagnostics) {
+    return checkpointDiagnostics;
+  }
+
+  const rows = (diagnosticsRows ?? []) as RunDiagnosticRow[];
+  const googleDiagnostics = rows.filter((row) => row.source === "google_maps");
+  if (googleDiagnostics.length === 0) {
+    return buildEmptyDiagnostics();
+  }
+
+  const targetsById = new Map(targets.map((target) => [target.id, target]));
+  const successCount = googleDiagnostics.filter((row) => row.status === "success").length;
+  const failCount = googleDiagnostics.filter((row) => row.status === "failed").length;
+
+  return {
+    source_stats: {
+      success: successCount,
+      fail: failCount,
+      failure_ratio: googleDiagnostics.length === 0 ? 0 : failCount / googleDiagnostics.length,
+    },
+    google_maps: googleDiagnostics.map((row): DiagnosticsTarget => {
+      const target = targetsById.get(row.target_id);
+      return {
+        cafe: target ? displayTargetName(target) : row.target_id,
+        override_present: false,
+        resolved: row.status !== "failed",
+        resolved_name: target?.resolved_name ?? undefined,
+        attempts: row.error_message
+          ? [
+              {
+                api_status: row.status.toUpperCase(),
+                via: row.source,
+                query: target?.url ?? row.target_id,
+                error_message: row.error_message,
+              },
+            ]
+          : [],
+      };
+    }),
+  };
 }
 
 export function parseLeads(report: WeeklyIntelReport): ReportLead[] {
@@ -879,18 +1326,106 @@ export function parseCompetitorDeltas(report: WeeklyIntelReport): CompetitorDelt
   }));
 }
 
+function buildTrendDeltaCards(
+  latestReport: ReportRecord | null,
+  previousReport: ReportRecord | null,
+  latestRuns: RunSummary[],
+): TrendDeltaCard[] {
+  if (!latestReport) {
+    return [];
+  }
+
+  const deltas: TrendDeltaCard[] = [];
+  const latestLeads = parseLeads(latestReport.body);
+  const latestDeltas = parseCompetitorDeltas(latestReport.body);
+
+  if (latestLeads[0]) {
+    deltas.push({
+      title: "Fresh target angle",
+      summary: latestLeads[0].hook,
+      tone: "good",
+    });
+  }
+
+  if (previousReport) {
+    const coverageDelta = Math.round((latestReport.coverageScore - previousReport.coverageScore) * 100);
+    deltas.push({
+      title: "Coverage shift",
+      summary:
+        coverageDelta === 0
+          ? "Coverage held steady since the last completed run."
+          : `Coverage ${coverageDelta > 0 ? "improved" : "dropped"} by ${Math.abs(coverageDelta)} points since the previous run.`,
+      tone: coverageDelta >= 0 ? "good" : "warn",
+    });
+  }
+
+  if (latestDeltas[0]) {
+    deltas.push({
+      title: "Competitor movement",
+      summary: latestDeltas[0].summary,
+      tone: latestDeltas[0].impact >= 6 ? "warn" : "neutral",
+    });
+  }
+
+  if (latestRuns[0]) {
+    deltas.push({
+      title: "Run health",
+      summary: `Latest run is ${latestRuns[0].status} at ${Math.round(latestRuns[0].coverageScore * 100)}% coverage.`,
+      tone: latestRuns[0].status === "completed" ? "good" : latestRuns[0].status === "partial" ? "warn" : "neutral",
+    });
+  }
+
+  return deltas;
+}
+
+export async function getProjectTrends(projectId: string): Promise<ProjectTrendData | null> {
+  const project = await getProject(projectId);
+  if (!project) {
+    return null;
+  }
+
+  const [diagnostics, runs] = await Promise.all([getDiagnostics(projectId), listRuns(projectId)]);
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return {
+      snapshot: buildTrendSnapshot(runs, project, diagnostics),
+      deltas: [],
+    };
+  }
+
+  const { data, error } = await supabase
+    .from("reports")
+    .select("id, run_id, project_id, status, coverage_score, body, approved_at, created_at")
+    .eq("account_id", context.accountId)
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(2);
+
+  if (error) {
+    throw error;
+  }
+
+  const reports = ((data ?? []) as ReportRow[]).map(mapReportRecord);
+  return {
+    snapshot: buildTrendSnapshot(runs, project, diagnostics),
+    deltas: buildTrendDeltaCards(reports[0] ?? null, reports[1] ?? null, runs),
+  };
+}
+
 export async function getDashboardData(projectId: string): Promise<DashboardData | null> {
   const [account, project] = await Promise.all([getAccountSummary(), getProject(projectId)]);
   if (!account || !project) {
     return null;
   }
 
-  const [report, diagnostics, runs] = await Promise.all([
-    getLatestReport(projectId),
+  const [reportRecord, diagnostics, runs] = await Promise.all([
+    getLatestReportRecord(projectId),
     getDiagnostics(projectId),
     listRuns(projectId),
   ]);
 
+  const report = reportRecord?.body ?? null;
   const leads = report ? parseLeads(report) : [];
   const deltas = report ? parseCompetitorDeltas(report) : [];
   const coverage = buildCoverageBlock(project, diagnostics, leads, deltas);
@@ -904,6 +1439,7 @@ export async function getDashboardData(projectId: string): Promise<DashboardData
     project,
     account,
     report,
+    reportRecord,
     diagnostics,
     runs,
     leads,

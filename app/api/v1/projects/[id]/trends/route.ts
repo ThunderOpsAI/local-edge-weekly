@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
 
-import { getAccountContext } from "@/lib/auth";
 import { buildApiLoginRedirect } from "@/lib/api-auth";
-import { getLatestReportRecord, getProject } from "@/lib/repository";
+import { getAccountContext } from "@/lib/auth";
+import { getProject, getProjectTrends } from "@/lib/repository";
 
 export async function GET(
   request: Request,
@@ -18,10 +18,10 @@ export async function GET(
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const report = await getLatestReportRecord(params.id);
-  if (!report) {
-    return NextResponse.json({ error: "Report not found" }, { status: 404 });
+  const trends = await getProjectTrends(params.id);
+  if (!trends) {
+    return NextResponse.json({ error: "Trend data not found" }, { status: 404 });
   }
 
-  return NextResponse.json({ data: report });
+  return NextResponse.json({ data: trends });
 }

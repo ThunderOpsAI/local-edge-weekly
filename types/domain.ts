@@ -75,6 +75,15 @@ export interface AccountSummary {
   manualRerunAvailable: boolean;
 }
 
+export interface TargetSummary {
+  id: string;
+  url: string;
+  name: string;
+  role: "primary" | "competitor";
+  isPrimary: boolean;
+  placeId?: string | null;
+}
+
 export interface ProjectSummary {
   id: string;
   name: string;
@@ -92,6 +101,17 @@ export interface ProjectSummary {
   manualRerunAvailable: boolean;
 }
 
+export interface ReportRecord {
+  id: string;
+  runId: string;
+  projectId: string;
+  status: "draft" | "approved" | "archived";
+  coverageScore: number;
+  createdAt: string;
+  approvedAt?: string | null;
+  body: WeeklyIntelReport;
+}
+
 export interface RunSummary {
   id: string;
   projectId: string;
@@ -100,6 +120,20 @@ export interface RunSummary {
   coverageScore: number;
   createdAt: string;
   durationLabel?: string;
+}
+
+export interface RunCheckpoint {
+  id: string;
+  stage: string;
+  status: "completed" | "failed" | "skipped";
+  payload: Record<string, unknown> | null;
+  createdAt: string;
+}
+
+export interface RunDetail extends RunSummary {
+  startedAt?: string | null;
+  completedAt?: string | null;
+  checkpoints: RunCheckpoint[];
 }
 
 export interface DashboardMetric {
@@ -139,6 +173,17 @@ export interface TrendSnapshot {
   series: TrendSeries[];
 }
 
+export interface TrendDeltaCard {
+  title: string;
+  summary: string;
+  tone: "good" | "warn" | "neutral";
+}
+
+export interface ProjectTrendData {
+  snapshot: TrendSnapshot;
+  deltas: TrendDeltaCard[];
+}
+
 export interface ComparisonRow {
   venue: string;
   rating: string;
@@ -158,6 +203,7 @@ export interface DashboardData {
   project: ProjectSummary;
   account: AccountSummary;
   report: WeeklyIntelReport | null;
+  reportRecord: ReportRecord | null;
   diagnostics: SourceDiagnostics;
   runs: RunSummary[];
   leads: ReportLead[];

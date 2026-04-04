@@ -5,22 +5,31 @@ import { ComparisonTable } from "@/components/comparison-table";
 import { DashboardMetrics } from "@/components/dashboard-metrics";
 import { OpportunityGrid } from "@/components/opportunity-grid";
 import { PlaybookList } from "@/components/playbook-list";
+import { ProjectSettingsForm } from "@/components/project-settings-form";
+import { ReportApprovalButton } from "@/components/report-approval-button";
 import { ReportSummary } from "@/components/report-summary";
+import { RunAnalysisButton } from "@/components/run-analysis-button";
+import { TargetManager } from "@/components/target-manager";
 import { TrendCard } from "@/components/trend-card";
+import { TrendDeltaList } from "@/components/trend-delta-list";
 import { getStatusTone, StatusChip } from "@/components/status-chip";
-import { getDashboardData } from "@/lib/repository";
+import { getDashboardData, getProjectTrends, listProjectTargets } from "@/lib/repository";
 
 export default async function ProjectDashboardPage({
   params,
 }: {
   params: { id: string };
 }) {
-  const dashboard = await getDashboardData(params.id);
+  const [dashboard, targets, trendData] = await Promise.all([
+    getDashboardData(params.id),
+    listProjectTargets(params.id),
+    getProjectTrends(params.id),
+  ]);
   if (!dashboard) {
     notFound();
   }
 
-  const { account, comparison, coverage, diagnostics, metrics, opportunities, playbook, project, report, trends } =
+  const { account, comparison, coverage, diagnostics, metrics, opportunities, playbook, project, report, reportRecord, trends } =
     dashboard;
 
   return (
@@ -35,12 +44,19 @@ export default async function ProjectDashboardPage({
             <p className="muted">{project.location}</p>
           </div>
           <div className="page-actions">
+            <RunAnalysisButton
+              projectId={project.id}
+              disabled={!project.manualRerunAvailable && project.reportStatus !== "draft"}
+            />
             <StatusChip tone={getStatusTone(project.reportStatus)} label={project.reportStatus} />
             <Link href={`/projects/${project.id}/diagnostics`} className="button button-secondary">
               Diagnostics
             </Link>
             <Link href={`/projects/${project.id}/runs`} className="button button-secondary">
               Run history
+            </Link>
+            <Link href={`/projects/${project.id}/trends`} className="button button-secondary">
+              Trends
             </Link>
           </div>
         </div>
@@ -70,7 +86,19 @@ export default async function ProjectDashboardPage({
 
       {report ? (
         <div className="dashboard-grid">
-          <ReportSummary report={report} leads={dashboard.leads} />
+          <div className="stack">
+            <ReportSummary report={report} leads={dashboard.leads} />
+            {reportRecord && reportRecord.status !== "approved" ? (
+              <article className="panel">
+                <p className="eyebrow">Operator Action</p>
+                <h3>Approve the latest report</h3>
+                <p className="muted">
+                  Approved reports are the cleanest candidate for customer email delivery and trend comparisons.
+                </p>
+                <ReportApprovalButton reportId={reportRecord.id} />
+              </article>
+            ) : null}
+          </div>
           <PlaybookList actions={playbook} />
         </div>
       ) : (
@@ -78,14 +106,28 @@ export default async function ProjectDashboardPage({
           <p className="eyebrow">No Report Yet</p>
           <h3>This project is ready for its first analysis run.</h3>
           <p className="muted">
-            The project exists, the plan logic is applied, and the dashboard is ready. The next
-            engineering step is connecting the queued worker so each project can generate its own
-            live report.
+            The project exists, the plan logic is applied, and the dashboard is ready. Queue a run
+            and this page will fill in once the worker finishes collecting and scoring signals.
           </p>
         </article>
       )}
 
+      <div className="dashboard-grid">
+        <ProjectSettingsForm
+          projectId={project.id}
+          initialName={project.name}
+          initialIndustry={project.industry}
+          initialLocation={project.location}
+        />
+        <TargetManager
+          projectId={project.id}
+          targets={targets}
+          competitorLimit={project.plan === "edge" ? 5 : 2}
+        />
+      </div>
+
       <ComparisonTable rows={comparison} />
+      <TrendDeltaList deltas={trendData?.deltas ?? []} />
       <TrendCard trends={trends} />
 
       <article className="panel">

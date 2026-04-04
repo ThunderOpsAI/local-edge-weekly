@@ -166,7 +166,8 @@ main {
 .stack,
 .list-grid,
 .project-list,
-.run-list {
+.run-list,
+.target-list {
   display: grid;
   gap: 16px;
 }
@@ -181,7 +182,8 @@ main {
 .playbook-row,
 .report-callout,
 .run-row,
-.plan-card {
+.plan-card,
+.target-row {
   border-radius: 22px;
   border: 1px solid var(--line);
   background: rgba(255, 255, 255, 0.56);
@@ -465,6 +467,14 @@ td {
   display: flex;
   justify-content: space-between;
   gap: 16px;
+}
+
+.target-row {
+  padding: 16px 18px;
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
 }
 
 @media (max-width: 980px) {

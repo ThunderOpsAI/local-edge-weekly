@@ -4,6 +4,7 @@ import { getAccountContext } from "@/lib/auth";
 import { buildApiLoginRedirect } from "@/lib/api-auth";
 import { triggerRunSchema } from "@/lib/api-contract";
 import { getProject, listRuns } from "@/lib/repository";
+import { enqueueProjectRun } from "@/lib/run-executor";
 
 export async function GET(
   request: Request,
@@ -49,15 +50,49 @@ export async function POST(
     );
   }
 
-  return NextResponse.json(
-    {
-      data: {
-        runId: "queued-run",
-        projectId: params.id,
-        status: "queued",
-        note: "Queue wiring is still pending. Current analysis runs from the Python engine.",
+  try {
+    const internalJobSecret =
+      process.env.INTERNAL_JOB_SECRET ??
+      (process.env.NODE_ENV === "production" ? undefined : "local-edge-dev-secret");
+
+    if (!internalJobSecret) {
+      return NextResponse.json(
+        {
+          error: "INTERNAL_JOB_SECRET is missing, so the background worker cannot be started.",
+        },
+        { status: 500 },
+      );
+    }
+
+    const result = await enqueueProjectRun(params.id, context);
+    const workerUrl = new URL("/api/internal/process-run", request.url);
+
+    void fetch(workerUrl, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-internal-job-secret": internalJobSecret,
       },
-    },
-    { status: 202 },
-  );
+      body: JSON.stringify({ runId: result.runId }),
+      cache: "no-store",
+    }).catch((error) => {
+      console.error("Failed to trigger background run worker", error);
+    });
+
+    return NextResponse.json(
+      {
+        data: {
+          runId: result.runId,
+          projectId: params.id,
+          status: result.status,
+          message: "Run queued successfully.",
+        },
+      },
+      { status: 202 },
+    );
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Run execution failed";
+    const status = /already queued or running/i.test(message) ? 409 : 500;
+    return NextResponse.json({ error: message }, { status });
+  }
 }

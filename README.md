@@ -41,6 +41,8 @@ Suggested first-time setup:
    - `NEXT_PUBLIC_SUPABASE_URL`
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
+   - `INTERNAL_JOB_SECRET`
+   - Optional: `PYTHON_BIN` if your Python executable is not available as `python`
 
 You can start from `.env.local.example` and rename it to `.env.local`.
 
@@ -92,4 +94,6 @@ The callback route creates the first `accounts` and `users` membership row for e
 - Google Maps Place Details is used for ratings, review-derived strengths/issues, hours, and website context.
 - Magic-link auth is now required for `/projects` and `/api` routes.
 - Projects are account-owned and tenant-scoped through Supabase Auth + RLS.
-- Reports, diagnostics, and runs still need the queued analysis flow to become fully live per project.
+- Project runs now queue through the API, then process in a background worker route that persists reports, diagnostics, checkpoints, and analysis runs.
+- If your machine has a non-standard Python path, set `PYTHON_BIN` in `.env.local`.
+- In production, set a strong `INTERNAL_JOB_SECRET` so only trusted internal calls can start the worker route.
