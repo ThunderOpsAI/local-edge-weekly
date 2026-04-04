@@ -44,6 +44,7 @@ Suggested first-time setup:
    - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
    - `SUPABASE_SERVICE_ROLE_KEY`
    - `INTERNAL_JOB_SECRET`
+   - `CRON_SECRET`
    - `APP_BASE_URL`
    - Optional: `RESEND_API_KEY`
    - Optional: `RESEND_FROM_EMAIL`
@@ -101,9 +102,34 @@ The callback route creates the first `accounts` and `users` membership row for e
 - Projects are account-owned and tenant-scoped through Supabase Auth + RLS.
 - Project runs now queue through the API, then dispatch from the database queue through an internal worker route that persists reports, diagnostics, checkpoints, and analysis runs.
 - The dispatcher can be called safely again to recover queued work, and it will requeue stale in-progress runs automatically.
+- A scheduled cron endpoint now exists at `/api/internal/scheduled-dispatch` for automatic queue draining.
 - Report detail pages now live at `/reports/:reportId`.
 - Owner accounts now get a lightweight `/admin` workspace for recent run and report oversight.
 - Richer diagnostics are now stored directly on `run_diagnostics.detail_payload` when the latest migration is applied.
 - If your machine has a non-standard Python path, set `PYTHON_BIN` in `.env.local`.
 - In production, set a strong `INTERNAL_JOB_SECRET` so only trusted internal calls can start the worker route.
+- Set `CRON_SECRET` so scheduled dispatch calls can authenticate safely.
 - Approved reports can send real email through Resend when `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured.
+
+## Scheduler / Cron
+
+The repo now includes a Vercel-ready cron config in `vercel.json`:
+
+- `/api/internal/scheduled-dispatch`
+- schedule: every 5 minutes
+
+That endpoint:
+
+- authenticates with `CRON_SECRET`
+- claims queued runs from the database
+- processes up to 3 runs per invocation
+- requeues stale running jobs before dispatching
+
+If you deploy somewhere other than Vercel, point your scheduler at:
+
+- `GET /api/internal/scheduled-dispatch`
+
+With either:
+
+- `Authorization: Bearer <CRON_SECRET>`
+- or `x-cron-secret: <CRON_SECRET>`
