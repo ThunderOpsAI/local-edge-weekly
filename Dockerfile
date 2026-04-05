@@ -26,6 +26,7 @@ RUN cp -r .next/static .next/standalone/.next/static && \
     if [ -d public ]; then cp -r public .next/standalone/public; fi
 
 ENV NODE_ENV=production
+ENV HOSTNAME="0.0.0.0"
 ENV PORT=3000
 EXPOSE 3000
 
