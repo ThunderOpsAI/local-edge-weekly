@@ -7,7 +7,9 @@ import { sendRunSummaryEmail } from "@/lib/email";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import type { ProjectLifecycleStatus, SourceDiagnostics, WeeklyIntelReport } from "@/types/domain";
 
-const PYTHON_BIN = process.env.PYTHON_BIN ?? "python";
+const PYTHON_BIN =
+  process.env.PYTHON_BIN ??
+  (process.env.NODE_ENV === "production" ? "python3" : "python");
 const COVERAGE_THRESHOLD = 0.4;
 const STALE_RUN_MINUTES = 20;
 
