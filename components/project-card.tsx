@@ -16,10 +16,10 @@ export function ProjectCard({ project }: ProjectCardProps) {
             {project.industry} - {project.plan}
           </p>
           <h3>{project.name}</h3>
+          <p className="muted">{project.location}</p>
         </div>
         <StatusChip tone={getStatusTone(project.reportStatus)} label={project.reportStatus} />
       </div>
-      <p className="muted">{project.location}</p>
       <p>
         <strong>Target:</strong> {project.primaryTarget}
       </p>

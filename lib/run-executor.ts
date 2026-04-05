@@ -1,17 +1,13 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
-import path from "node:path";
 import { spawn } from "node:child_process";
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
 import type { AccountContext } from "@/lib/auth";
+import { sendRunSummaryEmail } from "@/lib/email";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
 import type { ProjectLifecycleStatus, SourceDiagnostics, WeeklyIntelReport } from "@/types/domain";
 
 const PYTHON_BIN = process.env.PYTHON_BIN ?? "python";
-const PROJECT_CONFIG_NAME = "project-config.json";
-const OUTPUT_DIR_NAME = "pipeline-output";
 const COVERAGE_THRESHOLD = 0.4;
 const STALE_RUN_MINUTES = 20;
 
@@ -23,12 +19,19 @@ interface ProjectRow {
   location: string;
 }
 
+interface AccountUserRow {
+  id: string;
+  email: string;
+  role: "owner" | "member";
+}
+
 interface ProjectTargetRow {
   id: string;
   project_id: string;
   url: string;
   role: "primary" | "competitor";
   resolved_name: string | null;
+  resolved_place_id?: string | null;
   is_primary: boolean;
 }
 
@@ -57,6 +60,32 @@ interface DispatchResult {
   requeuedRunIds: string[];
 }
 
+interface PipelineSignal {
+  source: string;
+  cafe: string;
+  kind: string;
+  summary: string;
+  impact: number;
+  confidence: number;
+  happened_at?: string | null;
+}
+
+interface PipelineFinalOutput {
+  report: WeeklyIntelReport;
+  noise_log: Array<Record<string, unknown>>;
+  resolved_signals: PipelineSignal[];
+  source_diagnostics: SourceDiagnostics;
+  dashboard_summary: string;
+  stage_outputs?: Record<string, Record<string, unknown>>;
+}
+
+interface TargetIdentity {
+  target: ProjectTargetRow;
+  canonicalName: string;
+  aliases: Set<string>;
+  compactAliases: Set<string>;
+}
+
 function getAdminClientOrThrow() {
   const supabase = getSupabaseServiceRoleClient();
   if (!supabase) {
@@ -69,11 +98,18 @@ function getAdminClientOrThrow() {
 function slugFromUrl(url: string): string {
   try {
     const parsed = new URL(url);
-    return parsed.hostname
-      .replace(/^www\./, "")
-      .replace(/\.[a-z]{2,}$/i, "")
-      .replace(/[-_.]+/g, " ")
-      .trim();
+    const pathSegment = parsed.pathname
+      .split("/")
+      .map((segment) => segment.trim())
+      .find((segment) => segment && !["home", "index", "index.html"].includes(segment.toLowerCase()));
+
+    if (pathSegment && parsed.hostname.includes("facebook.com")) {
+      return pathSegment.replace(/[-_.]+/g, " ").trim();
+    }
+
+    const hostParts = parsed.hostname.replace(/^www\./, "").split(".");
+    const domainParts = hostParts.slice(0, Math.max(1, hostParts.length - Math.min(2, hostParts.length - 1)));
+    return domainParts.join(" ").replace(/[-_.]+/g, " ").trim();
   } catch {
     return url;
   }
@@ -83,8 +119,74 @@ function titleCase(value: string): string {
   return value
     .split(/\s+/)
     .filter(Boolean)
-    .map((part) => part.charAt(0).toUpperCase() + part.slice(1))
+    .map((part) =>
+      part.toUpperCase() === part && part.length <= 4
+        ? part
+        : part.charAt(0).toUpperCase() + part.slice(1).toLowerCase(),
+    )
     .join(" ");
+}
+
+function decodeHtmlEntities(value: string): string {
+  return value
+    .replace(/&amp;/gi, "&")
+    .replace(/&apos;/gi, "'")
+    .replace(/&#39;/gi, "'")
+    .replace(/&quot;/gi, '"')
+    .replace(/&nbsp;/gi, " ");
+}
+
+function splitJoinedWords(value: string): string {
+  return value
+    .replace(/([a-z])([A-Z])/g, "$1 $2")
+    .replace(/([A-Za-z])([0-9])/g, "$1 $2")
+    .replace(/([0-9])([A-Za-z])/g, "$1 $2");
+}
+
+function cleanDisplayName(value: string): string {
+  return titleCase(
+    splitJoinedWords(decodeHtmlEntities(value))
+      .replace(/\s+/g, " ")
+      .trim(),
+  );
+}
+
+function normalizeComparableName(value: string | null | undefined): string {
+  if (!value) {
+    return "";
+  }
+
+  return decodeHtmlEntities(value)
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeCompactName(value: string | null | undefined): string {
+  return normalizeComparableName(value).replace(/\s+/g, "");
+}
+
+function isMeaningfulTitle(value: string | null): value is string {
+  if (!value) {
+    return false;
+  }
+
+  const normalized = normalizeComparableName(value);
+  if (!normalized) {
+    return false;
+  }
+
+  return ![
+    "home",
+    "welcome",
+    "facebook",
+    "instagram",
+    "menu",
+    "homepage",
+    "index",
+  ].includes(normalized);
 }
 
 async function fetchWebsiteTitle(url: string): Promise<string | null> {
@@ -117,19 +219,138 @@ async function fetchWebsiteTitle(url: string): Promise<string | null> {
 
 async function normalizeTargetName(target: ProjectTargetRow, projectName?: string) {
   if (target.resolved_name) {
-    return target.resolved_name;
-  }
-
-  if (target.is_primary && projectName) {
-    return projectName;
+    return cleanDisplayName(target.resolved_name);
   }
 
   const title = await fetchWebsiteTitle(target.url);
-  if (title) {
-    return title;
+  if (isMeaningfulTitle(title)) {
+    return cleanDisplayName(title);
   }
 
-  return titleCase(slugFromUrl(target.url));
+  const fallback = cleanDisplayName(slugFromUrl(target.url));
+  if (fallback) {
+    return fallback;
+  }
+
+  return projectName ? cleanDisplayName(projectName) : cleanDisplayName(target.url);
+}
+
+function buildTargetAliases(target: ProjectTargetRow, canonicalName: string) {
+  const aliases = new Set<string>();
+  const addAlias = (value: string | null | undefined) => {
+    const normalized = normalizeComparableName(value);
+    if (normalized) {
+      aliases.add(normalized);
+    }
+  };
+
+  addAlias(canonicalName);
+  addAlias(target.resolved_name);
+  addAlias(slugFromUrl(target.url));
+  addAlias(cleanDisplayName(slugFromUrl(target.url)));
+
+  try {
+    const parsed = new URL(target.url);
+    addAlias(parsed.hostname.replace(/^www\./, ""));
+    addAlias(parsed.pathname.split("/").find(Boolean) ?? "");
+  } catch {
+    addAlias(target.url);
+  }
+
+  return aliases;
+}
+
+function toCompactAliases(aliases: Set<string>) {
+  return new Set(
+    Array.from(aliases)
+      .map((alias) => normalizeCompactName(alias))
+      .filter(Boolean),
+  );
+}
+
+function buildTargetIdentities(targets: ProjectTargetRow[], canonicalNames: Map<string, string>) {
+  return targets.map((target) => {
+    const canonicalName =
+      canonicalNames.get(target.id) ??
+      cleanDisplayName(target.resolved_name ?? slugFromUrl(target.url) ?? target.url);
+    const aliases = buildTargetAliases(target, canonicalName);
+
+    return {
+      target,
+      canonicalName,
+      aliases,
+      compactAliases: toCompactAliases(aliases),
+    } satisfies TargetIdentity;
+  });
+}
+
+function matchTargetIdentity(
+  identities: TargetIdentity[],
+  candidateNames: Array<string | null | undefined>,
+  placeId?: string | null,
+) {
+  if (placeId) {
+    const matchByPlaceId = identities.find((identity) => identity.target.resolved_place_id === placeId);
+    if (matchByPlaceId) {
+      return matchByPlaceId;
+    }
+  }
+
+  const normalizedCandidates = candidateNames
+    .map((candidate) => normalizeComparableName(candidate))
+    .filter(Boolean);
+  const compactCandidates = candidateNames
+    .map((candidate) => normalizeCompactName(candidate))
+    .filter(Boolean);
+
+  for (const candidate of normalizedCandidates) {
+    const directMatch = identities.find((identity) => identity.aliases.has(candidate));
+    if (directMatch) {
+      return directMatch;
+    }
+  }
+
+  for (const candidate of normalizedCandidates) {
+    const fuzzyMatch = identities.find((identity) =>
+      Array.from(identity.aliases).some((alias) => alias.includes(candidate) || candidate.includes(alias)),
+    );
+    if (fuzzyMatch) {
+      return fuzzyMatch;
+    }
+  }
+
+  for (const candidate of compactCandidates) {
+    const compactMatch = identities.find((identity) => identity.compactAliases.has(candidate));
+    if (compactMatch) {
+      return compactMatch;
+    }
+  }
+
+  for (const candidate of compactCandidates) {
+    const compactFuzzyMatch = identities.find((identity) =>
+      Array.from(identity.compactAliases).some((alias) => alias.includes(candidate) || candidate.includes(alias)),
+    );
+    if (compactFuzzyMatch) {
+      return compactFuzzyMatch;
+    }
+  }
+
+  return null;
+}
+
+function extractSignalVenueCandidates(signal: PipelineSignal) {
+  const candidates = [signal.cafe];
+  const summaryPrefix = signal.summary.match(/^([^:]+):/);
+  if (summaryPrefix?.[1]) {
+    candidates.push(summaryPrefix[1]);
+  }
+
+  const summaryVenue = signal.summary.match(/^Position\s+(.+?)\s+as the alternative/i);
+  if (summaryVenue?.[1]) {
+    candidates.push(summaryVenue[1]);
+  }
+
+  return candidates;
 }
 
 async function loadProject(
@@ -154,7 +375,7 @@ async function loadProject(
 
   const { data: targets, error: targetsError } = await supabase
     .from("project_targets")
-    .select("id, project_id, url, role, resolved_name, is_primary")
+    .select("id, project_id, url, role, resolved_name, resolved_place_id, is_primary")
     .eq("project_id", projectId)
     .order("created_at", { ascending: true });
 
@@ -166,6 +387,26 @@ async function loadProject(
     project: project as ProjectRow,
     targets: (targets ?? []) as ProjectTargetRow[],
   };
+}
+
+async function loadAccountOwner(
+  supabase: SupabaseClient,
+  accountId: string,
+) {
+  const { data, error } = await supabase
+    .from("users")
+    .select("id, email, role")
+    .eq("account_id", accountId)
+    .eq("role", "owner")
+    .order("created_at", { ascending: true })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
+
+  return (data as AccountUserRow | null) ?? null;
 }
 
 async function loadRun(
@@ -269,7 +510,7 @@ async function findInFlightRunId(
   return (data?.id as string | undefined) ?? null;
 }
 
-async function createProjectConfig(project: ProjectRow, targets: ProjectTargetRow[]) {
+async function createPipelinePayload(project: ProjectRow, targets: ProjectTargetRow[]) {
   const normalizedTargets = await Promise.all(
     targets.map(async (target) => ({
       target,
@@ -282,9 +523,16 @@ async function createProjectConfig(project: ProjectRow, targets: ProjectTargetRo
     ({ target }) => !target.is_primary && target.role !== "primary",
   );
 
+  const targetNameMap = Object.fromEntries(
+    normalizedTargets.map(({ target, name }) => [target.id, name]),
+  );
+
   return {
     last_scan_date: new Date().toISOString().slice(0, 10),
     location_focus: project.location,
+    project_id: project.id,
+    project_name: project.name,
+    industry: project.industry,
     targets: primary.map(({ name }) => ({
       name,
       focus: `Primary ${project.industry} in ${project.location}`,
@@ -293,6 +541,7 @@ async function createProjectConfig(project: ProjectRow, targets: ProjectTargetRo
       name,
       focus: `Competitor ${project.industry} in ${project.location}`,
     })),
+    target_name_map: targetNameMap,
   };
 }
 
@@ -302,6 +551,20 @@ function stageCheckpointPayload(stage: string, payload: Record<string, unknown>)
     status: "completed",
     payload,
   };
+}
+
+function isMissingColumnError(error: unknown, column: string) {
+  const message =
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+      ? error.message
+      : error instanceof Error
+        ? error.message
+        : "";
+
+  return message.toLowerCase().includes(`'${column.toLowerCase()}' column`);
 }
 
 async function insertCheckpoint(
@@ -365,50 +628,49 @@ async function persistSignals(
   accountId: string,
   projectId: string,
   targets: ProjectTargetRow[],
-  report: WeeklyIntelReport,
+  signals: PipelineSignal[],
 ) {
-  const targetByName = new Map(
-    targets.map((target) => [
-      (target.resolved_name ?? titleCase(slugFromUrl(target.url)) ?? "").toLowerCase(),
-      target,
-    ]),
+  const targetIdentities = buildTargetIdentities(
+    targets,
+    new Map(targets.map((target) => [target.id, cleanDisplayName(target.resolved_name ?? slugFromUrl(target.url))])),
+  );
+  const primaryTarget = targetIdentities.find((entry) => entry.target.is_primary || entry.target.role === "primary");
+  const competitorTarget = targetIdentities.find(
+    (entry) => !entry.target.is_primary && entry.target.role !== "primary",
   );
 
-  const rows = [
-    ...report.target_leads.map(([name, gap, hook]) => {
-      const target = targetByName.get(name.toLowerCase()) ?? targets.find((entry) => entry.is_primary) ?? targets[0];
+  const rows = signals
+    .map((signal) => {
+      const matchedTarget =
+        matchTargetIdentity(targetIdentities, extractSignalVenueCandidates(signal)) ??
+        (signal.kind === "review_strength" ? primaryTarget : competitorTarget) ??
+        primaryTarget ??
+        competitorTarget ??
+        null;
+
+      const target = matchedTarget?.target;
+      const entityScope: "target" | "competitor" = matchedTarget?.target.is_primary ? "target" : "competitor";
+
       return {
         run_id: runId,
         account_id: accountId,
         project_id: projectId,
         target_id: target?.id,
-        source: "report_generation",
-        signal_type: mapSignalType(gap, "target"),
-        raw_value: `${gap} ${hook}`.trim(),
-        structured_insight: { gap, hook },
-        confidence_score: 0.8,
-        entity_scope: "target",
+        source: signal.source,
+        signal_type: mapSignalType(signal.summary, entityScope),
+        raw_value: signal.summary,
+        structured_insight: {
+          kind: signal.kind,
+          venue: matchedTarget?.canonicalName ?? cleanDisplayName(signal.cafe),
+          impact: signal.impact,
+          confidence: signal.confidence,
+          happened_at: signal.happened_at ?? null,
+        },
+        confidence_score: Math.min(0.99, Math.max(0.1, signal.confidence / 10)),
+        entity_scope: entityScope,
       };
-    }),
-    ...report.competitor_delta.map(([name, summary, impact]) => {
-      const target =
-        targetByName.get(name.toLowerCase()) ??
-        targets.find((entry) => !entry.is_primary && entry.role !== "primary") ??
-        targets[0];
-      return {
-        run_id: runId,
-        account_id: accountId,
-        project_id: projectId,
-        target_id: target?.id,
-        source: "report_generation",
-        signal_type: mapSignalType(summary, "competitor"),
-        raw_value: summary,
-        structured_insight: { impact, venue: name },
-        confidence_score: Math.min(0.95, Math.max(0.4, impact / 10)),
-        entity_scope: "competitor",
-      };
-    }),
-  ].filter((row) => row.target_id);
+    })
+    .filter((row) => row.target_id);
 
   if (rows.length === 0) {
     return;
@@ -427,19 +689,18 @@ async function persistDiagnostics(
   targets: ProjectTargetRow[],
   diagnostics: SourceDiagnostics,
 ) {
-  const targetByName = new Map(
-    targets.map((target) => [
-      (target.resolved_name ?? titleCase(slugFromUrl(target.url))).toLowerCase(),
-      target,
-    ]),
+  const targetIdentities = buildTargetIdentities(
+    targets,
+    new Map(targets.map((target) => [target.id, cleanDisplayName(target.resolved_name ?? slugFromUrl(target.url))])),
   );
 
   const rows = diagnostics.google_maps
     .map((entry) => {
-      const target =
-        targetByName.get((entry.resolved_name ?? entry.cafe).toLowerCase()) ??
-        targets.find((item) => titleCase(slugFromUrl(item.url)).toLowerCase() === entry.cafe.toLowerCase()) ??
-        null;
+      const target = matchTargetIdentity(
+        targetIdentities,
+        [entry.resolved_name, entry.cafe, entry.details_context?.website ?? null],
+        entry.place_id,
+      )?.target ?? null;
 
       if (!target) {
         return null;
@@ -457,15 +718,77 @@ async function persistDiagnostics(
         detail_payload: entry,
       };
     })
-    .filter(Boolean);
+    .filter(
+      (
+        row,
+      ): row is {
+        run_id: string;
+        account_id: string;
+        target_id: string;
+        source: string;
+        status: "success" | "failed";
+        signals_found: number;
+        signals_expected: number;
+        error_message: string | null;
+        detail_payload: SourceDiagnostics["google_maps"][number];
+      } => Boolean(row),
+    );
 
   if (rows.length === 0) {
     return;
   }
 
-  const { error } = await supabase.from("run_diagnostics").insert(rows);
+  let { error } = await supabase.from("run_diagnostics").insert(rows);
+  if (!error) {
+    return;
+  }
+
+  if (isMissingColumnError(error, "account_id") || isMissingColumnError(error, "detail_payload")) {
+    const legacyRows = rows.map(({ account_id: _accountId, detail_payload: _detailPayload, ...row }) => row);
+    const retry = await supabase.from("run_diagnostics").insert(legacyRows);
+    error = retry.error;
+  }
+
   if (error) {
     throw error;
+  }
+}
+
+async function syncTargetResolutions(
+  supabase: SupabaseClient,
+  targets: ProjectTargetRow[],
+  diagnostics: SourceDiagnostics,
+) {
+  const targetIdentities = buildTargetIdentities(
+    targets,
+    new Map(targets.map((target) => [target.id, cleanDisplayName(target.resolved_name ?? slugFromUrl(target.url))])),
+  );
+
+  for (const entry of diagnostics.google_maps) {
+    if (!entry.resolved || !entry.place_id) {
+      continue;
+    }
+
+    const target = matchTargetIdentity(
+      targetIdentities,
+      [entry.resolved_name, entry.cafe, entry.details_context?.website ?? null],
+      entry.place_id,
+    )?.target;
+    if (!target) {
+      continue;
+    }
+
+    const { error } = await supabase
+      .from("project_targets")
+      .update({
+        resolved_name: entry.resolved_name ?? entry.cafe,
+        resolved_place_id: entry.place_id,
+      })
+      .eq("id", target.id);
+
+    if (error) {
+      throw error;
+    }
   }
 }
 
@@ -476,14 +799,26 @@ async function persistReport(
   projectId: string,
   report: WeeklyIntelReport,
   coverageScore: number,
+  previousReport: WeeklyIntelReport | null,
 ) {
+  const latestRating = report.competitor_delta.find((entry) => /rating/i.test(entry[1]));
+  const previousRating = previousReport?.competitor_delta.find((entry) => /rating/i.test(entry[1]));
   const { error } = await supabase.from("reports").insert({
     run_id: runId,
     account_id: accountId,
     project_id: projectId,
     version: 1,
-    status: "draft",
-    body: report,
+    status: "approved",
+    approved_at: new Date().toISOString(),
+    body: {
+      ...report,
+      delta_summary: {
+        rating_change: latestRating?.[1] && previousRating?.[1] ? `${previousRating[1]} -> ${latestRating[1]}` : null,
+        signal_count_change: previousReport
+          ? report.target_leads.length + report.competitor_delta.length - (previousReport.target_leads.length + previousReport.competitor_delta.length)
+          : null,
+      },
+    },
     coverage_score: coverageScore,
   });
 
@@ -492,21 +827,52 @@ async function persistReport(
   }
 }
 
-async function runPythonPipeline(configPath: string, outputDir: string) {
-  const root = process.cwd();
+async function loadPreviousReport(
+  supabase: SupabaseClient,
+  projectId: string,
+  accountId: string,
+) {
+  const { data, error } = await supabase
+    .from("reports")
+    .select("body")
+    .eq("project_id", projectId)
+    .eq("account_id", accountId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
 
-  return await new Promise<void>((resolve, reject) => {
-    const child = spawn(PYTHON_BIN, ["pipeline.py"], {
+  if (error) {
+    throw error;
+  }
+
+  return (data?.body as WeeklyIntelReport | undefined) ?? null;
+}
+
+async function runPythonPipeline(payload: Record<string, unknown>) {
+  const root = process.cwd();
+  const bootstrap = [
+    "import json, os, sys",
+    "from pipeline import run_pipeline",
+    "payload = json.loads(os.environ['PIPELINE_PAYLOAD_JSON'])",
+    "result = run_pipeline(payload)",
+    "json.dump(result.get('final_output', {}), sys.stdout)",
+  ].join("; ");
+
+  return await new Promise<PipelineFinalOutput>((resolve, reject) => {
+    const child = spawn(PYTHON_BIN, ["-c", bootstrap], {
       cwd: root,
       env: {
         ...process.env,
-        PROJECT_CONFIG_PATH: configPath,
-        PIPELINE_OUTPUT_DIR: outputDir,
+        PIPELINE_PAYLOAD_JSON: JSON.stringify(payload),
       },
       stdio: ["ignore", "pipe", "pipe"],
     });
 
+    let stdout = "";
     let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+    });
     child.stderr.on("data", (chunk) => {
       stderr += chunk.toString();
     });
@@ -514,25 +880,18 @@ async function runPythonPipeline(configPath: string, outputDir: string) {
     child.on("error", reject);
     child.on("close", (code) => {
       if (code === 0) {
-        resolve();
-        return;
+        try {
+          resolve(JSON.parse(stdout) as PipelineFinalOutput);
+          return;
+        } catch (error) {
+          reject(new Error(`Unable to parse pipeline output: ${error instanceof Error ? error.message : "Unknown parse error"}`));
+          return;
+        }
       }
 
       reject(new Error(stderr.trim() || `Pipeline exited with code ${code}`));
     });
   });
-}
-
-async function readRunArtifacts(outputDir: string) {
-  const [reportRaw, diagnosticsRaw] = await Promise.all([
-    readFile(path.join(outputDir, "weekly_intel_report.json"), "utf-8"),
-    readFile(path.join(outputDir, "source_diagnostics.json"), "utf-8"),
-  ]);
-
-  return {
-    report: JSON.parse(reportRaw) as WeeklyIntelReport,
-    diagnostics: JSON.parse(diagnosticsRaw) as SourceDiagnostics,
-  };
 }
 
 export async function enqueueProjectRun(
@@ -608,9 +967,8 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
   }
 
   const { project, targets } = loaded;
-  const tempRoot = await mkdtemp(path.join(os.tmpdir(), "local-edge-run-"));
-  const outputDir = path.join(tempRoot, OUTPUT_DIR_NAME);
-  const configPath = path.join(tempRoot, PROJECT_CONFIG_NAME);
+  const owner = await loadAccountOwner(supabase, run.account_id);
+  const previousReport = await loadPreviousReport(supabase, project.id, run.account_id);
 
   try {
     await updateRun(supabase, runId, {
@@ -619,34 +977,50 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
       started_at: run.started_at ?? new Date().toISOString(),
     });
 
-    const projectConfig = await createProjectConfig(project, targets);
-    await writeFile(configPath, JSON.stringify(projectConfig, null, 2), "utf-8");
-    await insertCheckpoint(supabase, runId, "input_normalization", {
-      target_count: projectConfig.targets.length,
-      competitor_count: projectConfig.competition.length,
-      location_focus: project.location,
-    });
+    const pipelinePayload = await createPipelinePayload(project, targets);
+    const pipelineResult = await runPythonPipeline(pipelinePayload);
+    const report = pipelineResult.report;
+    const diagnostics = pipelineResult.source_diagnostics;
+    const coverageScore = computeCoverageScore(report, diagnostics);
+    const persistenceWarnings: string[] = [];
 
-    await updateRun(supabase, runId, { stage: "source_collection" });
-    await runPythonPipeline(configPath, outputDir);
-    await insertCheckpoint(supabase, runId, "source_collection", {
-      pipeline_output_dir: outputDir,
-    });
+    const stageOutputs = pipelineResult.stage_outputs ?? {};
+    for (const [stageName, payload] of Object.entries(stageOutputs)) {
+      await updateRun(supabase, runId, { stage: stageName });
+      await insertCheckpoint(supabase, runId, stageName, payload);
+    }
 
     await updateRun(supabase, runId, { stage: "report_generation" });
-    const { report, diagnostics } = await readRunArtifacts(outputDir);
-    const coverageScore = computeCoverageScore(report, diagnostics);
-    const finalStatus: ProjectLifecycleStatus = coverageScore < COVERAGE_THRESHOLD ? "partial" : "completed";
+    await persistReport(supabase, runId, run.account_id, project.id, report, coverageScore, previousReport);
 
-    await persistDiagnostics(supabase, runId, run.account_id, targets, diagnostics);
-    await persistSignals(supabase, runId, run.account_id, project.id, targets, report);
-    await persistReport(supabase, runId, run.account_id, project.id, report, coverageScore);
+    try {
+      await persistDiagnostics(supabase, runId, run.account_id, targets, diagnostics);
+    } catch (error) {
+      persistenceWarnings.push(error instanceof Error ? error.message : "Failed to persist diagnostics");
+    }
+
+    try {
+      await syncTargetResolutions(supabase, targets, diagnostics);
+    } catch (error) {
+      persistenceWarnings.push(error instanceof Error ? error.message : "Failed to sync target resolutions");
+    }
+
+    try {
+      await persistSignals(supabase, runId, run.account_id, project.id, targets, pipelineResult.resolved_signals ?? []);
+    } catch (error) {
+      persistenceWarnings.push(error instanceof Error ? error.message : "Failed to persist signals");
+    }
+
+    const finalStatus: ProjectLifecycleStatus =
+      persistenceWarnings.length > 0 || coverageScore < COVERAGE_THRESHOLD ? "partial" : "completed";
+
     await insertCheckpoint(supabase, runId, "report_generation", {
       market_status: report.market_status,
       coverage_score: coverageScore,
       target_leads: report.target_leads.length,
       competitor_deltas: report.competitor_delta.length,
       diagnostics,
+      persistence_warnings: persistenceWarnings,
     });
 
     await updateRun(supabase, runId, {
@@ -655,6 +1029,37 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
       coverage_score: coverageScore,
       completed_at: new Date().toISOString(),
     });
+
+    if (owner?.email) {
+      const emailResult = await sendRunSummaryEmail({
+        to: owner.email,
+        project: {
+          id: project.id,
+          name: project.name,
+          industry: project.industry,
+          location: project.location,
+        },
+        report: {
+          id: runId,
+          runId,
+          projectId: project.id,
+          projectName: project.name,
+          status: "approved",
+          coverageScore,
+          createdAt: new Date().toISOString(),
+          approvedAt: new Date().toISOString(),
+          body: report,
+        },
+      }).catch((error) => ({
+        delivered: false as const,
+        reason: error instanceof Error ? error.message : "Email delivery failed",
+      }));
+
+      await insertCheckpoint(supabase, runId, "email_delivery", {
+        delivered: emailResult.delivered,
+        reason: "reason" in emailResult ? emailResult.reason : null,
+      });
+    }
 
     return {
       runId,
@@ -680,8 +1085,6 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
     }
 
     throw error;
-  } finally {
-    await rm(tempRoot, { recursive: true, force: true });
   }
 }
 

@@ -1,10 +1,11 @@
 import json
 import os
 import re
+import sys
 from urllib.parse import parse_qs, unquote_plus, urlparse
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 
@@ -937,6 +938,11 @@ def build_report(
 
 
 def write_dashboard(report: Dict, output_path: str) -> None:
+    with open(output_path, "w", encoding="utf-8") as f:
+        f.write(render_dashboard(report))
+
+
+def render_dashboard(report: Dict) -> str:
     leads = report.get("target_leads", [])[:3]
     deltas = report.get("competitor_delta", [])[:5]
 
@@ -955,8 +961,596 @@ def write_dashboard(report: Dict, output_path: str) -> None:
     for delta in deltas:
         lines.append(f"- {delta[0]} | Impact {delta[2]} | {delta[1]}")
 
-    with open(output_path, "w", encoding="utf-8") as f:
-        f.write("\n".join(lines) + "\n")
+    return "\n".join(lines) + "\n"
+
+
+def cafe_to_dict(cafe: Cafe) -> Dict[str, str]:
+    return {"name": cafe.name, "focus": cafe.focus, "kind": cafe.kind}
+
+
+def cafe_from_dict(payload: Dict[str, object]) -> Cafe:
+    return Cafe(
+        name=str(payload.get("name") or ""),
+        focus=str(payload.get("focus") or ""),
+        kind=str(payload.get("kind") or ""),
+    )
+
+
+def signal_to_dict(signal: Signal) -> Dict[str, object]:
+    return {
+        "source": signal.source,
+        "cafe": signal.cafe,
+        "kind": signal.kind,
+        "summary": signal.summary,
+        "impact": signal.impact,
+        "confidence": signal.confidence,
+        "happened_at": signal.happened_at.isoformat() if signal.happened_at else None,
+    }
+
+
+def signal_from_dict(payload: Dict[str, object]) -> Signal:
+    happened_at_raw = payload.get("happened_at")
+    happened_at = None
+    if isinstance(happened_at_raw, str) and happened_at_raw:
+        happened_at = datetime.fromisoformat(happened_at_raw)
+
+    return Signal(
+        source=str(payload.get("source") or ""),
+        cafe=str(payload.get("cafe") or ""),
+        kind=str(payload.get("kind") or ""),
+        summary=str(payload.get("summary") or ""),
+        impact=int(payload.get("impact") or 0),
+        confidence=float(payload.get("confidence") or 0),
+        happened_at=happened_at,
+    )
+
+
+def stats_dict(success: int = 0, fail: int = 0) -> Dict[str, object]:
+    total = success + fail
+    return {
+        "success": success,
+        "fail": fail,
+        "failure_ratio": (fail / total) if total else 0.0,
+    }
+
+
+def mark_stats_success(payload: Dict[str, object]) -> None:
+    payload["success"] = int(payload.get("success") or 0) + 1
+    payload["failure_ratio"] = stats_dict(
+        success=int(payload.get("success") or 0),
+        fail=int(payload.get("fail") or 0),
+    )["failure_ratio"]
+
+
+def mark_stats_fail(payload: Dict[str, object]) -> None:
+    payload["fail"] = int(payload.get("fail") or 0) + 1
+    payload["failure_ratio"] = stats_dict(
+        success=int(payload.get("success") or 0),
+        fail=int(payload.get("fail") or 0),
+    )["failure_ratio"]
+
+
+def parse_pipeline_date(value: object, field_name: str) -> datetime:
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Missing `{field_name}`")
+
+    text = value.strip()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    return datetime.fromisoformat(text)
+
+
+def normalize_cafe_entries(items: object, field_name: str, kind: str) -> List[Dict[str, str]]:
+    if not isinstance(items, list) or not items:
+        raise ValueError(f"`{field_name}` must be a non-empty list")
+
+    normalized: List[Dict[str, str]] = []
+    for item in items:
+        if isinstance(item, Cafe):
+            cafe = item
+        elif isinstance(item, dict):
+            name = item.get("name")
+            focus = item.get("focus", "")
+            if not isinstance(name, str) or not name.strip():
+                raise ValueError(f"`{field_name}` entries require `name`")
+            if not isinstance(focus, str):
+                raise ValueError(f"`{field_name}` entry `focus` must be a string")
+            cafe = Cafe(name=name.strip(), focus=focus.strip(), kind=kind)
+        else:
+            raise ValueError(f"`{field_name}` entries must be objects")
+        normalized.append(cafe_to_dict(cafe))
+
+    return normalized
+
+
+def resolve_google_places(cafes: List[Cafe], location_focus: str) -> List[Dict[str, object]]:
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+    if not key:
+        return []
+
+    place_overrides = load_json_env("GOOGLE_MAPS_PLACES_JSON")
+    results: List[Dict[str, object]] = []
+
+    for cafe in cafes:
+        override = place_overrides.get(cafe.name)
+        resolved: Optional[GoogleLookupResult] = None
+        attempts: List[Dict[str, object]] = []
+
+        try:
+            place_id = extract_google_place_id(override)
+            if place_id:
+                lookup = details_place_rating(place_id, key)
+                attempts.append(lookup.__dict__.copy())
+                if lookup.api_status == "OK":
+                    resolved = lookup
+            else:
+                search_query = extract_google_search_query(override)
+                if search_query:
+                    lookup = textsearch_place_rating(search_query, key)
+                    attempts.append(lookup.__dict__.copy())
+                    if lookup.api_status == "OK":
+                        resolved = lookup
+
+            queries = [
+                f"{cafe.name} {location_focus}",
+                f"{cafe.name} Wangaratta VIC pub",
+                f"{cafe.name} Wangaratta pub",
+                cafe.name,
+            ]
+            if not resolved:
+                for query in queries:
+                    lookup = textsearch_place_rating(query, key)
+                    attempts.append(lookup.__dict__.copy())
+                    if lookup.api_status == "OK":
+                        resolved = lookup
+                        break
+
+            if not resolved:
+                results.append(
+                    {
+                        "cafe": cafe.name,
+                        "kind": cafe.kind,
+                        "override_present": bool(override),
+                        "resolved": False,
+                        "attempts": attempts,
+                    }
+                )
+                continue
+
+            resolved_name = resolved.name or cafe.name
+            rating = resolved.rating
+            reviews_count = resolved.reviews_count
+            target_tokens = [t for t in re.split(r"[^a-z0-9]+", cafe.name.lower()) if len(t) > 2]
+            if target_tokens:
+                resolved_lower = resolved_name.lower()
+                if not all(token in resolved_lower for token in target_tokens[:2]):
+                    for query in queries[1:]:
+                        fallback = textsearch_place_rating(query, key)
+                        attempts.append(fallback.__dict__.copy())
+                        if fallback.api_status == "OK" and fallback.name:
+                            fallback_lower = fallback.name.lower()
+                            if all(token in fallback_lower for token in target_tokens[:2]):
+                                resolved_name = fallback.name
+                                rating = fallback.rating
+                                reviews_count = fallback.reviews_count
+                                resolved = fallback
+                                break
+
+            base_result = {
+                "cafe": cafe.name,
+                "kind": cafe.kind,
+                "override_present": bool(override),
+                "attempts": attempts,
+                "resolved_name": resolved_name,
+                "place_id": resolved.place_id,
+                "rating": rating,
+                "reviews_count": reviews_count,
+            }
+            if rating is None:
+                results.append(
+                    {
+                        **base_result,
+                        "resolved": False,
+                        "reason": "NO_RATING",
+                    }
+                )
+                continue
+
+            results.append({**base_result, "resolved": True})
+        except requests.RequestException as exc:
+            results.append(
+                {
+                    "cafe": cafe.name,
+                    "kind": cafe.kind,
+                    "override_present": bool(override),
+                    "resolved": False,
+                    "attempts": attempts,
+                    "request_exception": True,
+                    "error_message": str(exc),
+                }
+            )
+
+    return results
+
+
+def input_normalization(payload: Dict[str, object]) -> Dict[str, object]:
+    last_scan_date = parse_pipeline_date(payload.get("last_scan_date"), "last_scan_date")
+    location_focus = payload.get("location_focus")
+    if not isinstance(location_focus, str) or not location_focus.strip():
+        raise ValueError("Missing `location_focus`")
+
+    targets = normalize_cafe_entries(payload.get("targets"), "targets", "target")
+    competition = normalize_cafe_entries(payload.get("competition"), "competition", "competition")
+
+    return {
+        **payload,
+        "last_scan_date": last_scan_date.isoformat(),
+        "location_focus": location_focus.strip(),
+        "targets": targets,
+        "competition": competition,
+        "all_cafes": targets + competition,
+        "stage_outputs": {"input_normalization": {"normalized": True}},
+    }
+
+
+def place_resolution(payload: Dict[str, object]) -> Dict[str, object]:
+    cafes = [cafe_from_dict(item) for item in payload.get("all_cafes", [])]
+    google_places = resolve_google_places(cafes, str(payload.get("location_focus") or ""))
+
+    next_payload = dict(payload)
+    next_payload["google_places"] = google_places
+    stage_outputs = dict(next_payload.get("stage_outputs") or {})
+    stage_outputs["place_resolution"] = {
+        "resolved_places": sum(1 for item in google_places if item.get("resolved")),
+        "attempted_places": len(google_places),
+    }
+    next_payload["stage_outputs"] = stage_outputs
+    return next_payload
+
+
+def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
+    last_scan_date = parse_pipeline_date(payload.get("last_scan_date"), "last_scan_date")
+    cafes = [cafe_from_dict(item) for item in payload.get("all_cafes", [])]
+    stats = stats_dict()
+    google_collected: List[Dict[str, object]] = []
+    google_diagnostics: List[Dict[str, object]] = []
+    key = os.getenv("GOOGLE_MAPS_API_KEY")
+
+    for place in payload.get("google_places", []):
+        if not isinstance(place, dict):
+            continue
+
+        if place.get("request_exception"):
+            mark_stats_fail(stats)
+            continue
+
+        if not place.get("resolved"):
+            google_diagnostics.append(
+                {
+                    "cafe": place.get("cafe"),
+                    "override_present": bool(place.get("override_present")),
+                    "resolved": False,
+                    "attempts": place.get("attempts", []),
+                    **({"reason": place.get("reason")} if place.get("reason") else {}),
+                }
+            )
+            attempts = place.get("attempts", [])
+            if any(
+                isinstance(attempt, dict) and is_google_lookup_error(str(attempt.get("api_status")))
+                for attempt in attempts
+            ):
+                mark_stats_fail(stats)
+            else:
+                mark_stats_success(stats)
+            continue
+
+        context: Dict[str, object] = {}
+        if key and place.get("place_id"):
+            try:
+                context = details_place_context(str(place.get("place_id")), key)
+            except requests.RequestException:
+                mark_stats_fail(stats)
+                google_collected.append({**place, "details_context": None})
+                continue
+
+        google_collected.append({**place, "details_context": context or None})
+        google_diagnostics.append(
+            {
+                "cafe": place.get("cafe"),
+                "override_present": bool(place.get("override_present")),
+                "resolved": True,
+                "resolved_name": place.get("resolved_name"),
+                "place_id": place.get("place_id"),
+                "rating": place.get("rating"),
+                "reviews_count": place.get("reviews_count"),
+                "details_context": {
+                    "api_status": context.get("api_status"),
+                    "website": context.get("website"),
+                    "price_level": context.get("price_level"),
+                    "opening_hours": context.get("opening_hours"),
+                    "reviews_fetched": len(context.get("reviews", [])) if isinstance(context.get("reviews"), list) else 0,
+                }
+                if context
+                else None,
+                "attempts": place.get("attempts", []),
+            }
+        )
+        mark_stats_success(stats)
+
+    headers = {"User-Agent": "local-edge-weekly/1.0"}
+    subreddits = ["melbourne", "australia", "coffee"]
+    reddit_posts: List[Dict[str, object]] = []
+    for cafe in cafes:
+        for sub in subreddits:
+            try:
+                url = f"https://www.reddit.com/r/{sub}/search.json"
+                params = {"q": cafe.name, "restrict_sr": "1", "sort": "new", "t": "week", "limit": 10}
+                resp = requests.get(url, params=params, headers=headers, timeout=20)
+                if resp.status_code != 200:
+                    mark_stats_fail(stats)
+                    continue
+
+                data = resp.json()
+                posts = data.get("data", {}).get("children", [])
+                for post in posts:
+                    post_data = post.get("data", {})
+                    created = post_data.get("created_utc")
+                    if created is None:
+                        continue
+                    happened_at = parse_reddit_time(created)
+                    if happened_at < last_scan_date:
+                        continue
+
+                    reddit_posts.append(
+                        {
+                            "cafe": cafe.name,
+                            "subreddit": sub,
+                            "title": post_data.get("title", ""),
+                            "body": post_data.get("selftext", ""),
+                            "happened_at": happened_at.isoformat(),
+                        }
+                    )
+                mark_stats_success(stats)
+            except requests.RequestException:
+                mark_stats_fail(stats)
+
+    competitor_websites: List[Dict[str, object]] = []
+    mapping_raw = os.getenv("COMPETITOR_URLS_JSON")
+    if mapping_raw:
+        try:
+            mapping = json.loads(mapping_raw)
+            for cafe_name, url in mapping.items():
+                try:
+                    resp = requests.get(url, timeout=20)
+                    if resp.status_code != 200:
+                        mark_stats_fail(stats)
+                        continue
+
+                    competitor_websites.append(
+                        {
+                            "cafe": cafe_name,
+                            "url": url,
+                            "content": re.sub(r"\s+", " ", resp.text.lower()),
+                        }
+                    )
+                    mark_stats_success(stats)
+                except requests.RequestException:
+                    mark_stats_fail(stats)
+        except json.JSONDecodeError:
+            mark_stats_fail(stats)
+
+    next_payload = dict(payload)
+    next_payload["source_stats"] = stats
+    next_payload["google_collected"] = google_collected
+    next_payload["google_diagnostics"] = google_diagnostics
+    next_payload["reddit_posts"] = reddit_posts
+    next_payload["competitor_websites"] = competitor_websites
+    stage_outputs = dict(next_payload.get("stage_outputs") or {})
+    stage_outputs["source_collection"] = {
+        "google_records": len(google_collected),
+        "reddit_posts": len(reddit_posts),
+        "competitor_websites": len(competitor_websites),
+    }
+    next_payload["stage_outputs"] = stage_outputs
+    return next_payload
+
+
+def signal_extraction(payload: Dict[str, object]) -> Dict[str, object]:
+    cafes_by_name = {
+        cafe["name"]: cafe_from_dict(cafe)
+        for cafe in payload.get("all_cafes", [])
+        if isinstance(cafe, dict) and cafe.get("name")
+    }
+
+    signals: List[Signal] = []
+    for entry in payload.get("google_collected", []):
+        if not isinstance(entry, dict):
+            continue
+
+        rating = entry.get("rating")
+        resolved_name = entry.get("resolved_name") or entry.get("cafe")
+        reviews_count = entry.get("reviews_count")
+        if rating is not None:
+            signals.append(
+                Signal(
+                    source="google_maps",
+                    cafe=str(entry.get("cafe") or ""),
+                    kind="rating_snapshot",
+                    summary=f"{resolved_name}: Rating {rating} from {reviews_count} reviews.",
+                    impact=6 if rating and float(rating) < 4.2 else 4,
+                    confidence=8.5,
+                )
+            )
+
+        cafe = cafes_by_name.get(str(entry.get("cafe") or ""))
+        context = entry.get("details_context")
+        if cafe and isinstance(context, dict) and context.get("api_status") == "OK":
+            signals.extend(build_google_review_signals(cafe, context))
+
+    for post in payload.get("reddit_posts", []):
+        if not isinstance(post, dict):
+            continue
+        title = str(post.get("title") or "")
+        body = str(post.get("body") or "")
+        text = f"{title} {body}".strip()
+        happened_at_raw = post.get("happened_at")
+        happened_at = datetime.fromisoformat(happened_at_raw) if isinstance(happened_at_raw, str) else None
+        confidence = score_confidence_from_text(text)
+        signals.append(
+            Signal(
+                source="reddit",
+                cafe=str(post.get("cafe") or ""),
+                kind="discussion_signal",
+                summary=text[:260] if text else "Mentioned in Reddit discussion.",
+                impact=normalize_impact(text),
+                confidence=confidence,
+                happened_at=happened_at,
+            )
+        )
+
+    keywords = [
+        "special",
+        "new menu",
+        "menu",
+        "price",
+        "limited time",
+        "booking",
+        "book now",
+        "functions",
+        "bistro",
+        "events",
+        "live music",
+        "happy hour",
+        "sports bar",
+    ]
+    for website in payload.get("competitor_websites", []):
+        if not isinstance(website, dict):
+            continue
+        text = str(website.get("content") or "")
+        snippets = [keyword for keyword in keywords if keyword in text]
+        if snippets:
+            signals.append(
+                Signal(
+                    source="competitor_url",
+                    cafe=str(website.get("cafe") or ""),
+                    kind="menu_pricing_signal",
+                    summary=f"Detected website keywords: {', '.join(snippets[:4])}.",
+                    impact=5,
+                    confidence=7.5,
+                )
+            )
+
+    kept, noise = filter_confident_signals(signals)
+    resolved = resolve_conflicts(kept)
+    noise_payload = [
+        {
+            "source": signal.source,
+            "cafe": signal.cafe,
+            "kind": signal.kind,
+            "summary": signal.summary,
+            "impact": signal.impact,
+            "confidence": signal.confidence,
+        }
+        for signal in noise
+    ]
+
+    next_payload = dict(payload)
+    next_payload["raw_signals"] = [signal_to_dict(signal) for signal in signals]
+    next_payload["kept_signals"] = [signal_to_dict(signal) for signal in kept]
+    next_payload["noise_log"] = noise_payload
+    next_payload["resolved_signals"] = [signal_to_dict(signal) for signal in resolved]
+    next_payload["source_diagnostics"] = {
+        "source_stats": payload.get("source_stats", stats_dict()),
+        "google_maps": payload.get("google_diagnostics", []),
+    }
+    stage_outputs = dict(next_payload.get("stage_outputs") or {})
+    stage_outputs["signal_extraction"] = {
+        "raw_signals": len(signals),
+        "kept_signals": len(kept),
+        "resolved_signals": len(resolved),
+        "noise_signals": len(noise),
+    }
+    next_payload["stage_outputs"] = stage_outputs
+    return next_payload
+
+
+def report_generation(payload: Dict[str, object]) -> Dict[str, object]:
+    last_scan_date = parse_pipeline_date(payload.get("last_scan_date"), "last_scan_date")
+    targets = [cafe_from_dict(item) for item in payload.get("targets", [])]
+    competition = [cafe_from_dict(item) for item in payload.get("competition", [])]
+    resolved_signals = [signal_from_dict(item) for item in payload.get("resolved_signals", []) if isinstance(item, dict)]
+    source_stats_payload = payload.get("source_stats")
+    failure_ratio = 0.0
+    if isinstance(source_stats_payload, dict):
+        failure_ratio = float(source_stats_payload.get("failure_ratio") or 0.0)
+
+    report = build_report(last_scan_date, targets, competition, resolved_signals, failure_ratio > 0.30)
+
+    next_payload = dict(payload)
+    next_payload["report"] = report
+    next_payload["dashboard_summary"] = render_dashboard(report)
+    stage_outputs = dict(next_payload.get("stage_outputs") or {})
+    stage_outputs["report_generation"] = {
+        "market_status": report.get("market_status"),
+        "target_leads": len(report.get("target_leads", [])),
+        "competitor_delta": len(report.get("competitor_delta", [])),
+    }
+    next_payload["stage_outputs"] = stage_outputs
+    return next_payload
+
+
+def notification(payload: Dict[str, object]) -> Dict[str, object]:
+    next_payload = dict(payload)
+    next_payload["final_output"] = {
+        "report": payload.get("report", {}),
+        "noise_log": payload.get("noise_log", []),
+        "resolved_signals": payload.get("resolved_signals", []),
+        "source_diagnostics": payload.get("source_diagnostics", {}),
+        "dashboard_summary": payload.get("dashboard_summary", ""),
+        "stage_outputs": payload.get("stage_outputs", {}),
+    }
+    stage_outputs = dict(next_payload.get("stage_outputs") or {})
+    stage_outputs["notification"] = {
+        "prepared": True,
+        "keys": list(next_payload["final_output"].keys()),
+    }
+    next_payload["stage_outputs"] = stage_outputs
+    return next_payload
+
+
+STAGE_FUNCTIONS: Dict[str, Callable[[Dict[str, object]], Dict[str, object]]] = {
+    "input_normalization": input_normalization,
+    "place_resolution": place_resolution,
+    "source_collection": source_collection,
+    "signal_extraction": signal_extraction,
+    "report_generation": report_generation,
+    "notification": notification,
+}
+
+
+def execute_stage(stage_name: str, payload: Dict[str, object]) -> Dict[str, object]:
+    stage = STAGE_FUNCTIONS.get(stage_name)
+    if not stage:
+        raise ValueError(f"Unknown stage `{stage_name}`")
+
+    print(f"[pipeline] stage={stage_name} start", file=sys.stderr)
+    try:
+        next_payload = stage(payload)
+    except Exception as exc:
+        print(f"[pipeline] stage={stage_name} error: {exc}", file=sys.stderr)
+        raise
+    print(f"[pipeline] stage={stage_name} end", file=sys.stderr)
+    return next_payload
+
+
+def run_pipeline(payload: Dict[str, object]) -> Dict[str, object]:
+    for stage_name in STAGE_FUNCTIONS:
+        payload = execute_stage(stage_name, payload)
+    return payload
+
+
+def run_stage(stage_name: str, payload: Dict[str, object]) -> Dict[str, object]:
+    return execute_stage(stage_name, payload)
 
 
 def run() -> int:
@@ -982,50 +1576,29 @@ def run() -> int:
         last_scan_date, location_focus, targets, competition = parse_project_config(resolved_config_path)
     else:
         last_scan_date, location_focus, targets, competition = parse_plan(plan_path)
-    all_cafes = targets + competition
 
-    stats = SourceStats()
-    signals: List[Signal] = []
-    google_diagnostics: List[Dict[str, object]] = []
-    signals.extend(fetch_google_maps_signals(all_cafes, location_focus, stats, google_diagnostics))
-    signals.extend(fetch_reddit_signals(all_cafes, last_scan_date, stats))
-    signals.extend(fetch_competitor_url_signals(stats))
-
-    kept, noise = filter_confident_signals(signals)
-    resolved = resolve_conflicts(kept)
-
-    connectivity_error = stats.failure_ratio > 0.30
-    report = build_report(last_scan_date, targets, competition, resolved, connectivity_error)
+    pipeline_payload = run_pipeline(
+        {
+            "last_scan_date": last_scan_date.strftime("%Y-%m-%d"),
+            "location_focus": location_focus,
+            "targets": [cafe_to_dict(cafe) for cafe in targets],
+            "competition": [cafe_to_dict(cafe) for cafe in competition],
+        }
+    )
+    final_output = pipeline_payload.get("final_output", {})
+    report = final_output.get("report", {})
 
     with open(report_path, "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
 
-    noise_payload = [
-        {
-            "source": s.source,
-            "cafe": s.cafe,
-            "kind": s.kind,
-            "summary": s.summary,
-            "impact": s.impact,
-            "confidence": s.confidence,
-        }
-        for s in noise
-    ]
     with open(noise_log_path, "w", encoding="utf-8") as f:
-        json.dump(noise_payload, f, indent=2)
+        json.dump(final_output.get("noise_log", []), f, indent=2)
 
-    diagnostics_payload = {
-        "source_stats": {
-            "success": stats.success,
-            "fail": stats.fail,
-            "failure_ratio": stats.failure_ratio,
-        },
-        "google_maps": google_diagnostics,
-    }
     with open(diagnostics_path, "w", encoding="utf-8") as f:
-        json.dump(diagnostics_payload, f, indent=2)
+        json.dump(final_output.get("source_diagnostics", {}), f, indent=2)
 
-    write_dashboard(report, dashboard_path)
+    with open(dashboard_path, "w", encoding="utf-8") as f:
+        f.write(str(final_output.get("dashboard_summary", "")))
     return 0
 
 

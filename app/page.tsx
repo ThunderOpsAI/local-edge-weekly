@@ -2,6 +2,8 @@ import Link from "next/link";
 
 import { DashboardMetrics } from "@/components/dashboard-metrics";
 import { ProjectCard } from "@/components/project-card";
+import { MetricCard } from "@/components/metric-card";
+import { Mail, TrendingUp, Users, ShieldCheck } from "lucide-react";
 import { getAuthenticatedUser } from "@/lib/auth";
 import { getAccountSummary, listProjects } from "@/lib/repository";
 
@@ -41,48 +43,69 @@ export default async function HomePage() {
 
   return (
     <section className="stack">
-      <div className="panel hero-panel hero-grid">
-        <div className="stack">
-          <p className="eyebrow">Owner-facing early warning system</p>
-          <h2>Know what is changing in your local market without doing the research yourself.</h2>
-          <p className="muted">
-            Local Edge turns public signals from Google, websites, and competitor movement into a
-            plain-English report with one clear action to take next.
+      <div className="hero-card">
+        <div className="hero-left">
+          <div className="hero-badge">
+            <span>✨</span>
+            <span>New: Competitor Alerts</span>
+          </div>
+          <h2 className="hero-title">
+            Know your market <br />
+            <span className="hero-accent">without the stress.</span>
+          </h2>
+          <p className="hero-subtitle">
+            We do the research so you don&apos;t have to. Get a simple, plain-English report every week with the actions that matter.
           </p>
-          <div className="page-actions">
+          <div className="hero-actions-row">
             {user ? (
               <>
-                <Link href="/projects/new" className="button button-primary">
+                <Link href="/projects/new" className="hero-btn hero-btn-primary">
                   Create project
                 </Link>
-                <Link href={projects[0] ? `/projects/${projects[0].id}` : "/projects/new"} className="button button-secondary">
-                  View latest dashboard
+                <Link href={projects[0] ? `/projects/${projects[0].id}` : "/projects/new"} className="hero-btn hero-btn-secondary">
+                  View dashboard
                 </Link>
               </>
             ) : (
-              <Link href="/login" className="button button-primary">
-                Sign in
-              </Link>
+              <>
+                <Link href="/login" className="hero-btn hero-btn-primary">
+                  Start Free Trial
+                </Link>
+                <Link href="/login" className="hero-btn hero-btn-secondary">
+                  Watch Video
+                </Link>
+              </>
             )}
           </div>
         </div>
 
-        <div className="hero-stat-block">
-          <div className="hero-stat">
-            <span className="metric-label">Email output</span>
-            <strong>3 insights + 1 action</strong>
-          </div>
-          <div className="hero-stat">
-            <span className="metric-label">Trend unlock</span>
-            <strong>After run 2</strong>
-          </div>
-          <div className="hero-stat">
-            <span className="metric-label">Competitors</span>
-            <strong>Up to 5 on Edge</strong>
-          </div>
+        <div className="hero-features">
+          <MetricCard
+            value="Weekly Email"
+            helper="A friendly summary of everything you need to know."
+            icon={Mail}
+            tone="green"
+          />
+          <MetricCard
+            value="Smart Trends"
+            helper="See where the market is going before it gets there."
+            icon={TrendingUp}
+            tone="purple"
+          />
+          <MetricCard
+            value="Competitors"
+            helper="Keep an eye on the local competition, effortlessly."
+            icon={Users}
+            tone="green"
+          />
+          <MetricCard
+            value="Safe & Secure"
+            helper="Your data is yours. We just provide the insights."
+            icon={ShieldCheck}
+            tone="orange"
+          />
         </div>
       </div>
-
       <DashboardMetrics metrics={overviewMetrics} />
 
       {user ? (

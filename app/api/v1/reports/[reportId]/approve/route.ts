@@ -1,16 +1,9 @@
 import { NextResponse } from "next/server";
 
 import { buildApiLoginRedirect } from "@/lib/api-auth";
-import { approveReportSchema } from "@/lib/api-contract";
 import { getAccountContext } from "@/lib/auth";
-import { sendApprovedReportEmail } from "@/lib/email";
-import {
-  approveReport,
-  getProject,
-  getReportById,
-  parseCompetitorDeltas,
-  parseLeads,
-} from "@/lib/repository";
+import { sendRunSummaryEmail } from "@/lib/email";
+import { getProject, getReportById } from "@/lib/repository";
 
 export async function PATCH(
   request: Request,
@@ -21,39 +14,25 @@ export async function PATCH(
     return buildApiLoginRedirect(request);
   }
 
-  const existing = await getReportById(params.reportId);
-  if (!existing) {
-    return NextResponse.json({ error: "Report not found" }, { status: 404 });
-  }
-
-  const payload = await request.json().catch(() => ({}));
-  const parsed = approveReportSchema.safeParse(payload);
-  if (!parsed.success) {
-    return NextResponse.json(
-      { error: "Invalid approval payload", issues: parsed.error.flatten() },
-      { status: 400 },
-    );
-  }
-
-  const report = await approveReport(params.reportId);
+  const report = await getReportById(params.reportId);
   if (!report) {
-    return NextResponse.json({ error: "Unable to approve report" }, { status: 500 });
+    return NextResponse.json({ error: "Report not found" }, { status: 404 });
   }
 
   const project = await getProject(report.projectId);
   if (!project) {
-    return NextResponse.json({ error: "Project not found for approved report" }, { status: 500 });
+    return NextResponse.json({ error: "Project not found for report" }, { status: 404 });
   }
 
-  const leads = parseLeads(report.body);
-  const deltas = parseCompetitorDeltas(report.body);
-
-  const emailResult = await sendApprovedReportEmail({
+  const emailResult = await sendRunSummaryEmail({
     to: context.email,
-    project,
+    project: {
+      id: project.id,
+      name: project.name,
+      location: project.location,
+      industry: project.industry,
+    },
     report,
-    leads,
-    deltas,
   }).catch((error) => ({
     delivered: false as const,
     reason: error instanceof Error ? error.message : "Email delivery failed",

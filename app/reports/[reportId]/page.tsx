@@ -47,7 +47,7 @@ export default async function ReportDetailPage({
     {
       title: "Coverage",
       summary: `${Math.round(report.coverageScore * 100)}% coverage on this report.`,
-      sourceLabel: report.status === "approved" ? "Approved report" : "Draft report",
+      sourceLabel: "Latest report",
       tone: report.coverageScore >= 0.65 ? ("good" as const) : ("warn" as const),
     },
   ].filter(Boolean) as Array<{ title: string; summary: string; sourceLabel: string; tone: "good" | "warn" | "neutral" }>;
@@ -78,7 +78,7 @@ export default async function ReportDetailPage({
             </p>
           </div>
           <div className="page-actions">
-            {report.status !== "approved" ? <ReportApprovalButton reportId={report.id} /> : null}
+            <ReportApprovalButton reportId={report.id} />
             <Link href={`/projects/${project.id}`} className="button button-secondary">
               Back to project
             </Link>

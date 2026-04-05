@@ -46,6 +46,10 @@ Suggested first-time setup:
    - `INTERNAL_JOB_SECRET`
    - `CRON_SECRET`
    - `APP_BASE_URL`
+   - `GOOGLE_MAPS_API_KEY`
+   - `GOOGLE_MAPS_PLACES_JSON`
+   - `COMPETITOR_URLS_JSON`
+   - Optional: `GEMINI_API_KEY`
    - Optional: `RESEND_API_KEY`
    - Optional: `RESEND_FROM_EMAIL`
    - Optional: `PYTHON_BIN` if your Python executable is not available as `python`
@@ -74,17 +78,29 @@ The callback route creates the first `accounts` and `users` membership row for e
 - API routes and server components both read through the authenticated Supabase session
 - Protected app/API routes redirect unauthenticated users to `/login`
 
-## Current Python Run Flow
+## Current Run Flow
 
 1. Install Python dependencies:
    - `pip install -r requirements.txt`
-2. Set env vars in `.env`:
-   - `GEMINI_API_KEY`
+2. Copy `.env.local.example` to `.env.local`
+3. Fill in the required app + pipeline env vars:
+   - `NEXT_PUBLIC_SUPABASE_URL`
+   - `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   - `SUPABASE_SERVICE_ROLE_KEY`
+   - `INTERNAL_JOB_SECRET`
+   - `APP_BASE_URL`
    - `GOOGLE_MAPS_API_KEY`
-   - `COMPETITOR_URLS_JSON`
    - `GOOGLE_MAPS_PLACES_JSON`
-   - Optional: `PROJECT_CONFIG_PATH`
-3. Execute:
+   - `COMPETITOR_URLS_JSON`
+4. Optional:
+   - `RESEND_API_KEY`
+   - `RESEND_FROM_EMAIL`
+   - `GEMINI_API_KEY`
+   - `PYTHON_BIN`
+5. For pipeline-only local execution, `.env` is still auto-loaded by `pipeline.py`
+6. Execute the app:
+   - `npm run dev`
+7. Or execute the pipeline directly:
    - `python pipeline.py`
 
 ## Planned Product Direction
@@ -109,7 +125,7 @@ The callback route creates the first `accounts` and `users` membership row for e
 - If your machine has a non-standard Python path, set `PYTHON_BIN` in `.env.local`.
 - In production, set a strong `INTERNAL_JOB_SECRET` so only trusted internal calls can start the worker route.
 - Set `CRON_SECRET` so scheduled dispatch calls can authenticate safely.
-- Approved reports can send real email through Resend when `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured.
+- Completed runs can send real email through Resend when `RESEND_API_KEY` and `RESEND_FROM_EMAIL` are configured.
 
 ## Scheduler / Cron
 

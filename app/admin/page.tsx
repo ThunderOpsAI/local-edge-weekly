@@ -41,9 +41,9 @@ export default async function AdminPage() {
       tone: overview.failedRuns > 0 ? ("warn" as const) : ("good" as const),
     },
     {
-      label: "Approved reports",
+      label: "Ready reports",
       value: String(overview.approvedReports),
-      helper: "Reports ready for email delivery or sharing.",
+      helper: "Reports already persisted and ready for email delivery or sharing.",
       tone: overview.approvedReports > 0 ? ("good" as const) : ("neutral" as const),
     },
   ];
@@ -54,7 +54,7 @@ export default async function AdminPage() {
         <p className="eyebrow">Admin</p>
         <h2>{overview.account.name}</h2>
         <p className="muted">
-          Lightweight operator tooling for account health, recent runs, and report approvals.
+          Lightweight operator tooling for account health, recent runs, and delivered reports.
         </p>
       </div>
 
@@ -90,7 +90,7 @@ export default async function AdminPage() {
           <div className="section-header">
             <div>
               <p className="eyebrow">Recent Reports</p>
-              <h3>Approval and delivery state</h3>
+              <h3>Delivery state</h3>
             </div>
           </div>
           <div className="run-checkpoint-list">

@@ -1,8 +1,19 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Manrope, Fraunces } from "next/font/google";
 
 import { getAccountContext, getAuthenticatedUser } from "@/lib/auth";
 import "./globals.css";
+
+const sans = Manrope({
+  subsets: ["latin"],
+  variable: "--font-sans",
+});
+
+const serif = Fraunces({
+  subsets: ["latin"],
+  variable: "--font-serif",
+});
 
 export const metadata: Metadata = {
   title: "Local Edge",
@@ -14,22 +25,22 @@ export default async function RootLayout({ children }: { children: React.ReactNo
 
   return (
     <html lang="en">
-      <body>
+      <body className={`${sans.variable} ${serif.variable}`}>
         <main>
           <div className="shell">
             <header className="topbar">
-              <div className="brand">
-                <p className="eyebrow">Local Edge</p>
-                <h1>Your local market, explained in plain English.</h1>
-              </div>
-              <div className="page-actions">
+              <Link href="/" className="brand-mark">
+                <span className="brand-dot" />
+                <span>Local Edge</span>
+              </Link>
+              <nav className="topnav">
                 {user ? (
                   <>
-                    <Link href="/" className="button button-secondary">
+                    <Link href="/" className="button button-ghost">
                       Home
                     </Link>
                     {context?.role === "owner" ? (
-                      <Link href="/admin" className="button button-secondary">
+                      <Link href="/admin" className="button button-ghost">
                         Admin
                       </Link>
                     ) : null}
@@ -42,7 +53,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
                     Sign in
                   </Link>
                 )}
-              </div>
+              </nav>
             </header>
             {children}
           </div>

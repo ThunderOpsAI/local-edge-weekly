@@ -4,6 +4,7 @@ import { getAccountContext } from "@/lib/auth";
 import { buildApiLoginRedirect } from "@/lib/api-auth";
 import { createProjectSchema } from "@/lib/api-contract";
 import { createProject, listProjects } from "@/lib/repository";
+import { enqueueProjectRun } from "@/lib/run-executor";
 
 export async function GET(request: Request) {
   const context = await getAccountContext();
@@ -35,5 +36,37 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Unable to create project" }, { status: 500 });
   }
 
-  return NextResponse.json({ data: project }, { status: 201 });
+  let initialRun:
+    | {
+        runId: string;
+        status: "queued";
+      }
+    | null = null;
+
+  try {
+    initialRun = await enqueueProjectRun(project.id, context);
+
+    const internalJobSecret =
+      process.env.INTERNAL_JOB_SECRET ??
+      (process.env.NODE_ENV === "production" ? undefined : "local-edge-dev-secret");
+
+    if (internalJobSecret) {
+      const workerUrl = new URL("/api/internal/dispatch-runs", request.url);
+      void fetch(workerUrl, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-internal-job-secret": internalJobSecret,
+        },
+        body: JSON.stringify({ limit: 1 }),
+        cache: "no-store",
+      }).catch((error) => {
+        console.error("Failed to trigger initial project run", error);
+      });
+    }
+  } catch (error) {
+    console.error("Project created but initial run could not be queued", error);
+  }
+
+  return NextResponse.json({ data: project, initialRun }, { status: 201 });
 }

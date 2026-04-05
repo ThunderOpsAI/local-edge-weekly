@@ -32,16 +32,16 @@ export function ReportApprovalButton({ reportId, disabled = false }: ReportAppro
         | null;
 
       if (!response.ok) {
-        setError(payload?.error ?? "We could not approve that report.");
+        setError(payload?.error ?? "We could not resend that report email.");
         return;
       }
 
       if (payload?.data?.email?.delivered) {
-        setNotice("Report approved and email delivered.");
+        setNotice("Summary email sent.");
       } else if (payload?.data?.email?.reason === "missing_config") {
-        setNotice("Report approved. Email was skipped because Resend is not configured yet.");
+        setNotice("Email was skipped because Resend is not configured yet.");
       } else {
-        setNotice("Report approved.");
+        setNotice("Email could not be delivered.");
       }
       router.refresh();
     });
@@ -55,7 +55,7 @@ export function ReportApprovalButton({ reportId, disabled = false }: ReportAppro
         onClick={onApprove}
         disabled={disabled || isPending}
       >
-        {isPending ? "Approving..." : "Approve report"}
+        {isPending ? "Sending..." : "Resend email"}
       </button>
       {notice ? <p className="muted">{notice}</p> : null}
       {error ? <p className="form-error">{error}</p> : null}

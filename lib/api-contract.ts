@@ -25,12 +25,7 @@ export const triggerRunSchema = z.object({
   triggeredBy: z.string().optional(),
 });
 
-export const approveReportSchema = z.object({
-  status: z.literal("approved").default("approved"),
-});
-
 export type CreateProjectInput = z.infer<typeof createProjectSchema>;
 export type UpdateProjectInput = z.infer<typeof updateProjectSchema>;
 export type CreateTargetInput = z.infer<typeof createTargetSchema>;
 export type TriggerRunInput = z.infer<typeof triggerRunSchema>;
-export type ApproveReportInput = z.infer<typeof approveReportSchema>;

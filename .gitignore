@@ -1,5 +1,6 @@
 # Environments
 .env
+.env.local
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
@@ -15,3 +16,18 @@ node_modules/
 .next/
 out/
 *.log
+
+# Dev server artifacts
+*.pid
+
+# Browser automation
+.playwright-cli/
+
+# Pipeline runtime outputs (generated per-run, not source code)
+source_diagnostics.json
+noise_log.json
+weekly_intel_report.json
+Dashboard_Summary.md
+
+# Temp directories
+tmp-pipeline-check/

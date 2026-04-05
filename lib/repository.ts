@@ -118,7 +118,7 @@ interface ReportRow {
 interface RunDiagnosticRow {
   id: string;
   run_id: string;
-  account_id: string;
+  account_id?: string;
   target_id: string;
   source: string;
   status: "success" | "partial" | "failed";
@@ -281,6 +281,16 @@ function parseRatingFromSummary(summary: string): string {
   }
 
   return `${match[1]} stars`;
+}
+
+function extractNumericRating(summary: string): number | null {
+  const match = summary.match(/Rating\s+([0-9.]+)/i);
+  if (!match) {
+    return null;
+  }
+
+  const rating = Number(match[1]);
+  return Number.isFinite(rating) ? rating : null;
 }
 
 function parseReviewVolumeFromSummary(summary: string): string {
@@ -581,6 +591,44 @@ function mapDiagnosticsFromRows(rows: RunDiagnosticRow[], targets: ProjectTarget
       };
     }),
   };
+}
+
+async function selectRunDiagnosticsRows(
+  accountId: string,
+  runId: string,
+): Promise<RunDiagnosticRow[]> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) {
+    return [];
+  }
+
+  const modernQuery = await supabase
+    .from("run_diagnostics")
+    .select("id, run_id, account_id, target_id, source, status, signals_found, signals_expected, error_message, detail_payload, created_at")
+    .eq("account_id", accountId)
+    .eq("run_id", runId)
+    .order("created_at", { ascending: true });
+
+  if (!modernQuery.error) {
+    return (modernQuery.data ?? []) as RunDiagnosticRow[];
+  }
+
+  const message = modernQuery.error.message.toLowerCase();
+  if (!message.includes("'account_id' column") && !message.includes("'detail_payload' column")) {
+    throw modernQuery.error;
+  }
+
+  const legacyQuery = await supabase
+    .from("run_diagnostics")
+    .select("id, run_id, target_id, source, status, signals_found, signals_expected, error_message, created_at")
+    .eq("run_id", runId)
+    .order("created_at", { ascending: true });
+
+  if (legacyQuery.error) {
+    throw legacyQuery.error;
+  }
+
+  return (legacyQuery.data ?? []) as RunDiagnosticRow[];
 }
 
 async function getSupabaseAccount(accountId: string): Promise<AccountSummary | null> {
@@ -1105,32 +1153,6 @@ export async function getReportById(reportId: string): Promise<ReportRecord | nu
   return data ? mapReportRecord(data as ReportRow) : null;
 }
 
-export async function approveReport(reportId: string): Promise<ReportRecord | null> {
-  const context = await getAccountContext();
-  const supabase = getSupabaseServerClient();
-  if (!context || !supabase) {
-    return null;
-  }
-
-  const { data, error } = await supabase
-    .from("reports")
-    .update({
-      status: "approved",
-      approved_by: context.user.id,
-      approved_at: new Date().toISOString(),
-    })
-    .eq("account_id", context.accountId)
-    .eq("id", reportId)
-    .select("id, run_id, project_id, status, coverage_score, body, approved_at, created_at")
-    .maybeSingle();
-
-  if (error) {
-    throw error;
-  }
-
-  return data ? mapReportRecord(data as ReportRow) : null;
-}
-
 export async function getDiagnostics(projectId: string): Promise<SourceDiagnostics> {
   const context = await getAccountContext();
   const supabase = getSupabaseServerClient();
@@ -1155,25 +1177,16 @@ export async function getDiagnostics(projectId: string): Promise<SourceDiagnosti
     return buildEmptyDiagnostics();
   }
 
-  const [{ data: diagnosticsRows, error: diagnosticsError }, targets, checkpointsByRun] = await Promise.all([
-    supabase
-      .from("run_diagnostics")
-      .select("id, run_id, account_id, target_id, source, status, signals_found, signals_expected, error_message, detail_payload, created_at")
-      .eq("account_id", context.accountId)
-      .eq("run_id", latestRun.id)
-      .order("created_at", { ascending: true }),
+  const [diagnosticsRows, targets, checkpointsByRun] = await Promise.all([
+    selectRunDiagnosticsRows(context.accountId, latestRun.id),
     getSupabaseTargets([projectId]),
     getRunCheckpoints([latestRun.id]),
   ]);
 
-  if (diagnosticsError) {
-    throw diagnosticsError;
-  }
-
   const checkpoints = checkpointsByRun.get(latestRun.id) ?? [];
   const reportCheckpoint = [...checkpoints].reverse().find((checkpoint) => checkpoint.stage === "report_generation");
   const checkpointDiagnostics = diagnosticsFromCheckpointPayload(reportCheckpoint?.payload ?? null);
-  const rows = (diagnosticsRows ?? []) as RunDiagnosticRow[];
+  const rows = diagnosticsRows;
   if (checkpointDiagnostics && rows.every((row) => !row.detail_payload)) {
     return checkpointDiagnostics;
   }
@@ -1268,25 +1281,16 @@ export async function getRunDiagnosticsByRunId(runId: string): Promise<SourceDia
     return buildEmptyDiagnostics();
   }
 
-  const [{ data: diagnosticsRows, error: diagnosticsError }, targets, checkpointsByRun] = await Promise.all([
-    supabase
-      .from("run_diagnostics")
-      .select("id, run_id, account_id, target_id, source, status, signals_found, signals_expected, error_message, detail_payload, created_at")
-      .eq("account_id", context.accountId)
-      .eq("run_id", runId)
-      .order("created_at", { ascending: true }),
+  const [diagnosticsRows, targets, checkpointsByRun] = await Promise.all([
+    selectRunDiagnosticsRows(context.accountId, runId),
     getSupabaseTargets([detail.projectId]),
     getRunCheckpoints([runId]),
   ]);
 
-  if (diagnosticsError) {
-    throw diagnosticsError;
-  }
-
   const checkpoints = checkpointsByRun.get(runId) ?? [];
   const reportCheckpoint = [...checkpoints].reverse().find((checkpoint) => checkpoint.stage === "report_generation");
   const checkpointDiagnostics = diagnosticsFromCheckpointPayload(reportCheckpoint?.payload ?? null);
-  const rows = (diagnosticsRows ?? []) as RunDiagnosticRow[];
+  const rows = diagnosticsRows;
   if (checkpointDiagnostics && rows.every((row) => !row.detail_payload)) {
     return checkpointDiagnostics;
   }
@@ -1329,6 +1333,12 @@ function buildTrendDeltaCards(
 
   if (previousReport) {
     const coverageDelta = Math.round((latestReport.coverageScore - previousReport.coverageScore) * 100);
+    const latestSignalCount = latestReport.body.target_leads.length + latestReport.body.competitor_delta.length;
+    const previousSignalCount = previousReport.body.target_leads.length + previousReport.body.competitor_delta.length;
+    const signalDelta = latestSignalCount - previousSignalCount;
+    const latestRating = extractNumericRating(latestReport.body.competitor_delta[0]?.[1] ?? "");
+    const previousRating = extractNumericRating(previousReport.body.competitor_delta[0]?.[1] ?? "");
+
     deltas.push({
       title: "Coverage shift",
       summary:
@@ -1337,6 +1347,26 @@ function buildTrendDeltaCards(
           : `Coverage ${coverageDelta > 0 ? "improved" : "dropped"} by ${Math.abs(coverageDelta)} points since the previous run.`,
       tone: coverageDelta >= 0 ? "good" : "warn",
     });
+
+    deltas.push({
+      title: "Signal change",
+      summary:
+        signalDelta === 0
+          ? "Signal volume held steady since the previous run."
+          : `${Math.abs(signalDelta)} ${signalDelta > 0 ? "more" : "fewer"} report signals than the previous run.`,
+      tone: signalDelta >= 0 ? "good" : "warn",
+    });
+
+    if (latestRating !== null && previousRating !== null) {
+      deltas.push({
+        title: "Rating movement",
+        summary:
+          latestRating === previousRating
+            ? "Tracked rating held steady since the previous run."
+            : `Tracked rating ${latestRating > previousRating ? "improved" : "dropped"} by ${Math.abs(latestRating - previousRating).toFixed(1)}.`,
+        tone: latestRating >= previousRating ? "good" : "warn",
+      });
+    }
   }
 
   if (latestDeltas[0]) {

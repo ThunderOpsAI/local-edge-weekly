@@ -6,13 +6,14 @@ import { DashboardMetrics } from "@/components/dashboard-metrics";
 import { OpportunityGrid } from "@/components/opportunity-grid";
 import { PlaybookList } from "@/components/playbook-list";
 import { ProjectSettingsForm } from "@/components/project-settings-form";
-import { ReportApprovalButton } from "@/components/report-approval-button";
 import { ReportSummary } from "@/components/report-summary";
 import { RunAnalysisButton } from "@/components/run-analysis-button";
 import { TargetManager } from "@/components/target-manager";
 import { TrendCard } from "@/components/trend-card";
 import { TrendDeltaList } from "@/components/trend-delta-list";
 import { getStatusTone, StatusChip } from "@/components/status-chip";
+import { MetricCard } from "@/components/metric-card";
+import { Calendar, ShieldCheck, Database, Zap } from "lucide-react";
 import { getDashboardData, getProjectTrends, listProjectTargets } from "@/lib/repository";
 
 export default async function ProjectDashboardPage({
@@ -40,7 +41,7 @@ export default async function ProjectDashboardPage({
             <p className="eyebrow">
               {project.industry} - {account.plan} plan
             </p>
-            <h2>{project.name}</h2>
+            <h2 className="page-hero-title">{project.name}</h2>
             <p className="muted">{project.location}</p>
           </div>
           <div className="page-actions">
@@ -61,22 +62,44 @@ export default async function ProjectDashboardPage({
           </div>
         </div>
 
-        <div className="project-hero-grid">
-          <div className="hero-stat">
-            <span className="metric-label">Cadence</span>
-            <strong>{project.cadence === "weekly" ? "Weekly summaries" : "Monthly summaries"}</strong>
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4 py-4">
+          <MetricCard
+            label="Cadence"
+            value={project.cadence === "weekly" ? "Weekly summaries" : "Monthly summaries"}
+            icon={Calendar}
+          />
+          <MetricCard
+            label="Coverage"
+            value={`${Math.round(coverage.score * 100)}%`}
+            icon={ShieldCheck}
+            tone={coverage.score > 0.8 ? "good" : "neutral"}
+          />
+          <MetricCard
+            label="Resolved sources"
+            value={coverage.resolvedSources}
+            icon={Database}
+          />
+          <MetricCard
+            label="Playbook actions"
+            value={project.playbookActionsPerRun}
+            icon={Zap}
+          />
+        </div>
+
+        <div className="subtle-list">
+          <div className="subtle-list-item">
+            <span className="subtle-bullet" />
+            <div>
+              <strong>Latest run status</strong>
+              <p className="muted">This workspace updates from persisted Supabase run data, not local artifact files.</p>
+            </div>
           </div>
-          <div className="hero-stat">
-            <span className="metric-label">Coverage</span>
-            <strong>{Math.round(coverage.score * 100)}%</strong>
-          </div>
-          <div className="hero-stat">
-            <span className="metric-label">Resolved sources</span>
-            <strong>{coverage.resolvedSources}</strong>
-          </div>
-          <div className="hero-stat">
-            <span className="metric-label">Playbook actions</span>
-            <strong>{project.playbookActionsPerRun}</strong>
+          <div className="subtle-list-item">
+            <span className="subtle-bullet" />
+            <div>
+              <strong>Owner-ready output</strong>
+              <p className="muted">Summary, opportunities, diagnostics, and trends stay in one clean view for fast review.</p>
+            </div>
           </div>
         </div>
       </div>
@@ -88,22 +111,12 @@ export default async function ProjectDashboardPage({
         <div className="dashboard-grid">
           <div className="stack">
             <ReportSummary report={report} leads={dashboard.leads} />
-            {reportRecord && reportRecord.status !== "approved" ? (
-              <article className="panel">
-                <p className="eyebrow">Operator Action</p>
-                <h3>Approve the latest report</h3>
-                <p className="muted">
-                  Approved reports are the cleanest candidate for customer email delivery and trend comparisons.
-                </p>
-                <ReportApprovalButton reportId={reportRecord.id} />
-              </article>
-            ) : null}
             {reportRecord ? (
               <article className="panel">
                 <p className="eyebrow">Report Link</p>
                 <h3>Open the full report detail page</h3>
                 <p className="muted">
-                  Use the permalink view for sharing, approval, and a cleaner record of what was sent.
+                  Use the permalink view for sharing, resending the summary email, and reviewing the latest report.
                 </p>
                 <Link href={`/reports/${reportRecord.id}`} className="button button-secondary">
                   Open report detail
