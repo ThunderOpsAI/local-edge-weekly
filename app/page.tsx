@@ -110,19 +110,38 @@ export default async function HomePage() {
 
       {user ? (
         <>
-          <div className="section-header">
-            <div>
-              <p className="eyebrow">Projects</p>
-              <h3>Customer dashboards</h3>
-            </div>
-            <p className="muted">Projects show the latest report, source health, and what changed since the last run.</p>
-          </div>
+          {projects.length === 0 ? (
+            <article className="panel">
+              <p className="eyebrow">First Project</p>
+              <h3>Your workspace is ready. Create the first project to start tracking a business.</h3>
+              <p className="muted">
+                Add your business website, choose the location, and include a couple of competitor
+                URLs. The dashboard will create the project shell first, then runs can be queued
+                from there.
+              </p>
+              <div className="page-actions">
+                <Link href="/projects/new" className="button button-primary">
+                  Create your first project
+                </Link>
+              </div>
+            </article>
+          ) : (
+            <>
+              <div className="section-header">
+                <div>
+                  <p className="eyebrow">Projects</p>
+                  <h3>Customer dashboards</h3>
+                </div>
+                <p className="muted">Projects show the latest report, source health, and what changed since the last run.</p>
+              </div>
 
-          <div className="project-list">
-            {projects.map((project) => (
-              <ProjectCard key={project.id} project={project} />
-            ))}
-          </div>
+              <div className="project-list">
+                {projects.map((project) => (
+                  <ProjectCard key={project.id} project={project} />
+                ))}
+              </div>
+            </>
+          )}
         </>
       ) : (
         <article className="panel">
