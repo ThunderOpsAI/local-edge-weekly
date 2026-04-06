@@ -3,6 +3,7 @@ import { NextResponse } from "next/server";
 import { getAccountContext } from "@/lib/auth";
 import { buildApiLoginRedirect } from "@/lib/api-auth";
 import { createProjectSchema } from "@/lib/api-contract";
+import { getDispatchRunsUrl } from "@/lib/internal-jobs";
 import { createProject, listProjects } from "@/lib/repository";
 import { enqueueProjectRun } from "@/lib/run-executor";
 
@@ -51,8 +52,7 @@ export async function POST(request: Request) {
       (process.env.NODE_ENV === "production" ? undefined : "local-edge-dev-secret");
 
     if (internalJobSecret) {
-      const workerUrl = new URL("/api/internal/dispatch-runs", request.url);
-      void fetch(workerUrl, {
+      void fetch(getDispatchRunsUrl(), {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
