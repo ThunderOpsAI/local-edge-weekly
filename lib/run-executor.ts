@@ -463,6 +463,11 @@ async function claimQueuedRun(supabase: SupabaseClient): Promise<AnalysisRunRow 
     }
 
     if (claimed) {
+      console.log("[RUNNER] Claimed queued run", {
+        runId: claimed.id,
+        projectId: claimed.project_id,
+        accountId: claimed.account_id,
+      });
       return claimed as AnalysisRunRow;
     }
   }
@@ -941,6 +946,7 @@ export async function enqueueProjectRun(
 
 export async function processQueuedRun(runId: string): Promise<PersistedRunResult> {
   const supabase = getAdminClientOrThrow();
+  console.log("[RUNNER] Processing queued run", { runId });
   const run = await loadRun(supabase, runId);
 
   if (!run) {
@@ -980,6 +986,11 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
     });
 
     const pipelinePayload = await createPipelinePayload(project, targets);
+    console.log("[RUNNER] Running Python pipeline", {
+      runId,
+      projectId: project.id,
+      targetCount: targets.length,
+    });
     const pipelineResult = await runPythonPipeline(pipelinePayload);
     const report = pipelineResult.report;
     const diagnostics = pipelineResult.source_diagnostics;
@@ -1069,6 +1080,7 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
       coverageScore,
     };
   } catch (error) {
+    console.error("[RUNNER] Queued run failed", { runId, error });
     await updateRun(supabase, runId, {
       status: "failed",
       stage: "failed",
@@ -1092,12 +1104,17 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
 
 export async function dispatchQueuedRuns(limit = 1): Promise<DispatchResult> {
   const supabase = getAdminClientOrThrow();
+  console.log("[RUNNER] Dispatch requested", { limit });
   const requeuedRunIds = await requeueStaleRuns(supabase);
+  if (requeuedRunIds.length > 0) {
+    console.log("[RUNNER] Requeued stale runs", { requeuedRunIds });
+  }
   const processedRunIds: string[] = [];
 
   for (let index = 0; index < limit; index += 1) {
     const claimed = await claimQueuedRun(supabase);
     if (!claimed) {
+      console.log("[RUNNER] No queued runs available");
       break;
     }
 
@@ -1105,6 +1122,7 @@ export async function dispatchQueuedRuns(limit = 1): Promise<DispatchResult> {
     processedRunIds.push(claimed.id);
   }
 
+  console.log("[RUNNER] Dispatch finished", { processedRunIds, requeuedRunIds });
   return {
     processedRunIds,
     requeuedRunIds,

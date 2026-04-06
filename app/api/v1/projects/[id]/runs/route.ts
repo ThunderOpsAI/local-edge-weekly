@@ -52,19 +52,6 @@ export async function POST(
   }
 
   try {
-    const internalJobSecret =
-      process.env.INTERNAL_JOB_SECRET ??
-      (process.env.NODE_ENV === "production" ? undefined : "local-edge-dev-secret");
-
-    if (!internalJobSecret) {
-      return NextResponse.json(
-        {
-          error: "INTERNAL_JOB_SECRET is missing, so the background worker cannot be started.",
-        },
-        { status: 500 },
-      );
-    }
-
     const result = await enqueueProjectRun(params.id, context);
 
     triggerQueuedRunsInBackground(1, "manual-run");

@@ -46,14 +46,7 @@ export async function POST(request: Request) {
 
   try {
     initialRun = await enqueueProjectRun(project.id, context);
-
-    const internalJobSecret =
-      process.env.INTERNAL_JOB_SECRET ??
-      (process.env.NODE_ENV === "production" ? undefined : "local-edge-dev-secret");
-
-    if (internalJobSecret) {
-      triggerQueuedRunsInBackground(1, "project-create");
-    }
+    triggerQueuedRunsInBackground(1, "project-create");
   } catch (error) {
     console.error("Project created but initial run could not be queued", error);
   }

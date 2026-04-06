@@ -11,34 +11,39 @@ export async function register() {
 
     const cronSecret = process.env.CRON_SECRET;
     const port = process.env.PORT || "3000";
+    const url = `http://127.0.0.1:${port}/api/internal/scheduled-dispatch`;
+
+    async function triggerScheduledDispatch(reason: string) {
+      console.log(`[CRON] Triggering scheduled dispatch (${reason}) at ${new Date().toISOString()}`);
+
+      try {
+        const response = await fetch(url, {
+          headers: {
+            "x-cron-secret": cronSecret!,
+          },
+        });
+
+        const body = await response.json().catch(() => null);
+        console.log(`[CRON] Scheduled dispatch (${reason}) responded ${response.status}`, body);
+      } catch (error) {
+        console.error(`[CRON] Scheduled dispatch (${reason}) failed:`, error);
+      }
+    }
 
     if (!cronSecret) {
       console.warn("[CRON] CRON_SECRET is not set — scheduled dispatch will not be authorized. Skipping cron registration.");
       return;
     }
 
-    // Original vercel.json schedule: "0 9 * * *" (daily at 09:00 UTC)
-    // Railway containers run in UTC by default, matching Vercel behavior.
-    const schedule = process.env.CRON_SCHEDULE || "0 9 * * *";
+    // Railway uses this scheduler as a queue-draining fallback when the
+    // immediate in-process trigger is interrupted or missed.
+    const schedule = process.env.CRON_SCHEDULE || "*/1 * * * *";
 
     nodeCron.schedule(schedule, async () => {
-      const url = `http://localhost:${port}/api/internal/scheduled-dispatch`;
-      console.log(`[CRON] Triggering scheduled dispatch at ${new Date().toISOString()}`);
-
-      try {
-        const response = await fetch(url, {
-          headers: {
-            "x-cron-secret": cronSecret,
-          },
-        });
-
-        const body = await response.json().catch(() => null);
-        console.log(`[CRON] Scheduled dispatch responded ${response.status}`, body);
-      } catch (error) {
-        console.error("[CRON] Scheduled dispatch failed:", error);
-      }
+      await triggerScheduledDispatch("cron");
     });
 
     console.log(`[CRON] Registered scheduled-dispatch cron: "${schedule}" (UTC)`);
+    void triggerScheduledDispatch("startup");
   }
 }
