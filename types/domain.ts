@@ -168,6 +168,7 @@ export interface DashboardMetric {
   value: string;
   helper: string;
   tone: "good" | "warn" | "neutral";
+  href?: string;
 }
 
 export interface OpportunityCard {

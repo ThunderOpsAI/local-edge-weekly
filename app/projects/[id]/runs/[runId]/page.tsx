@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { DiagnosticsTable } from "@/components/diagnostics-table";
 import { RunCheckpoints } from "@/components/run-checkpoints";
 import { getStatusTone, StatusChip } from "@/components/status-chip";
+import { getAccountContext } from "@/lib/auth";
 import { getProject, getRunDetail, getRunDiagnosticsByRunId } from "@/lib/repository";
 
 export default async function RunDetailPage({
@@ -11,7 +12,8 @@ export default async function RunDetailPage({
 }: {
   params: { id: string; runId: string };
 }) {
-  const [project, run, diagnostics] = await Promise.all([
+  const [context, project, run, diagnostics] = await Promise.all([
+    getAccountContext(),
     getProject(params.id),
     getRunDetail(params.runId),
     getRunDiagnosticsByRunId(params.runId),
@@ -20,6 +22,8 @@ export default async function RunDetailPage({
   if (!project || !run || run.projectId !== params.id) {
     notFound();
   }
+
+  const internalAccess = context?.role === "owner";
 
   return (
     <section className="stack">
@@ -59,7 +63,11 @@ export default async function RunDetailPage({
       </div>
 
       <RunCheckpoints checkpoints={run.checkpoints} />
-      <DiagnosticsTable diagnostics={diagnostics} diagnosticsEnabled={project.diagnosticsEnabled} />
+      <DiagnosticsTable
+        diagnostics={diagnostics}
+        diagnosticsEnabled={project.diagnosticsEnabled}
+        internalAccess={internalAccess}
+      />
     </section>
   );
 }

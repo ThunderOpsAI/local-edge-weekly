@@ -1463,13 +1463,13 @@ export async function getAdminOverviewData(): Promise<AdminOverviewData | null> 
       .select("id, project_id, status, stage, coverage_score, created_at, projects(name)")
       .eq("account_id", context.accountId)
       .order("created_at", { ascending: false })
-      .limit(12),
+      .limit(100),
     supabase
       .from("reports")
       .select("id, project_id, status, coverage_score, created_at, projects(name)")
       .eq("account_id", context.accountId)
       .order("created_at", { ascending: false })
-      .limit(12),
+      .limit(100),
   ]);
 
   if (runsResult.error) {

@@ -38,6 +38,7 @@ export function DashboardMetrics({ metrics }: DashboardMetricsProps) {
           helper={metric.helper}
           tone={metric.tone}
           icon={getIcon(metric.label)}
+          href={metric.href}
         />
       ))}
     </section>

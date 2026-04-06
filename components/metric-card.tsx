@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { LucideIcon } from "lucide-react";
 
 export type CardTone = "green" | "blue" | "purple" | "orange" | "neutral" | "good" | "warn";
@@ -8,13 +9,13 @@ interface MetricCardProps {
   icon: LucideIcon;
   helper?: string;
   tone?: CardTone;
+  href?: string;
 }
 
-export function MetricCard({ label, value, icon: Icon, helper, tone = "neutral" }: MetricCardProps) {
+export function MetricCard({ label, value, icon: Icon, helper, tone = "neutral", href }: MetricCardProps) {
   const normalizedTone = tone === "good" ? "green" : tone === "warn" ? "orange" : tone;
-
-  return (
-    <div className={`feature-card feature-card-${normalizedTone}`}>
+  const content = (
+    <div className={`feature-card feature-card-${normalizedTone} ${href ? "feature-card-link" : ""}`}>
       <div className={`feature-icon feature-icon-${normalizedTone}`}>
         <Icon />
       </div>
@@ -30,4 +31,10 @@ export function MetricCard({ label, value, icon: Icon, helper, tone = "neutral" 
       </div>
     </div>
   );
+
+  if (href) {
+    return <Link href={href}>{content}</Link>;
+  }
+
+  return content;
 }

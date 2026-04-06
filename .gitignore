@@ -31,5 +31,6 @@ Dashboard_Summary.md
 
 # Temp directories
 tmp-pipeline-check/
+.automation/
 
 .vercel

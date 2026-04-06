@@ -3,10 +3,10 @@
 @tailwind utilities;
 
 :root {
-  --bg: #f3f5f8;
-  --bg-strong: #e9edf3;
-  --surface: rgba(255, 255, 255, 0.78);
-  --surface-strong: rgba(255, 255, 255, 0.92);
+  --bg: #e8edf3;
+  --bg-strong: #dde5ee;
+  --surface: rgba(255, 255, 255, 0.84);
+  --surface-strong: rgba(255, 255, 255, 0.95);
   --surface-deep: #ffffff;
   --ink: #111827;
   --ink-soft: #334155;
@@ -42,9 +42,9 @@ html {
 
 body {
   background:
-    radial-gradient(circle at top left, rgba(15, 118, 110, 0.12), transparent 28%),
-    radial-gradient(circle at top right, rgba(59, 130, 246, 0.1), transparent 26%),
-    linear-gradient(180deg, #f8fafc 0%, #f3f5f8 38%, #eef2f7 100%);
+    radial-gradient(circle at top left, rgba(15, 118, 110, 0.16), transparent 26%),
+    radial-gradient(circle at top right, rgba(59, 130, 246, 0.12), transparent 24%),
+    linear-gradient(180deg, #f0f4f9 0%, #e8edf3 38%, #dee6ef 100%);
   color: var(--ink);
   font-family: var(--font-sans), sans-serif;
 }
@@ -55,8 +55,8 @@ body::before {
   inset: 0;
   pointer-events: none;
   background:
-    linear-gradient(rgba(255, 255, 255, 0.5), rgba(255, 255, 255, 0.5)),
-    linear-gradient(120deg, rgba(255, 255, 255, 0.26), transparent 40%);
+    linear-gradient(rgba(255, 255, 255, 0.34), rgba(255, 255, 255, 0.34)),
+    linear-gradient(120deg, rgba(255, 255, 255, 0.18), transparent 40%);
   mask-image: radial-gradient(circle at center, black 35%, transparent 85%);
 }
 
@@ -95,7 +95,7 @@ main {
   padding: 14px 24px;
   border: 1px solid rgba(255, 255, 255, 0.5);
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.72);
+  background: rgba(255, 255, 255, 0.82);
   backdrop-filter: blur(18px);
   box-shadow: var(--shadow-soft);
 }
@@ -188,7 +188,7 @@ h3 {
 .button-secondary,
 .button-ghost {
   border-color: var(--line);
-  background: rgba(255, 255, 255, 0.75);
+  background: rgba(255, 255, 255, 0.88);
   color: var(--ink);
 }
 
@@ -201,7 +201,7 @@ h3 {
   overflow: hidden;
   background: var(--surface);
   backdrop-filter: blur(18px);
-  border: 1px solid rgba(255, 255, 255, 0.58);
+  border: 1px solid rgba(255, 255, 255, 0.72);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
   padding: 24px;
@@ -783,19 +783,29 @@ th {
   flex-direction: column;
   padding: 28px;
   border-radius: 1.5rem;
-  transition: box-shadow 0.2s ease, transform 0.2s ease;
+  box-shadow: 0 14px 36px -22px rgba(15, 23, 42, 0.18);
+  border: 1px solid rgba(255, 255, 255, 0.72);
+  transition: box-shadow 0.2s ease, transform 0.2s ease, border-color 0.2s ease;
 }
 
 .feature-card:hover {
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.06);
+  box-shadow: 0 18px 36px -18px rgba(15, 23, 42, 0.2);
   transform: translateY(-2px);
 }
 
-.feature-card-green { background: #f0faf3; }
-.feature-card-blue  { background: #eef5fe; }
-.feature-card-purple { background: #f3f0ff; }
-.feature-card-orange { background: #fff7ed; }
-.feature-card-neutral { background: #f4f7fa; }
+.feature-card-link {
+  cursor: pointer;
+}
+
+.feature-card-link:hover {
+  border-color: rgba(15, 118, 110, 0.18);
+}
+
+.feature-card-green { background: #e6f5ea; }
+.feature-card-blue  { background: #e8f0fb; }
+.feature-card-purple { background: #eee9fb; }
+.feature-card-orange { background: #fdf0df; }
+.feature-card-neutral { background: #e9eff5; }
 
 .feature-icon {
   width: 48px;

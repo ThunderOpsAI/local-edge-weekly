@@ -4,15 +4,17 @@ import { DashboardMetrics } from "@/components/dashboard-metrics";
 import { ProjectCard } from "@/components/project-card";
 import { MetricCard } from "@/components/metric-card";
 import { Mail, TrendingUp, Users, ShieldCheck } from "lucide-react";
-import { getAuthenticatedUser } from "@/lib/auth";
+import { getAccountContext, getAuthenticatedUser } from "@/lib/auth";
 import { getAccountSummary, listProjects } from "@/lib/repository";
 
 export default async function HomePage() {
-  const [user, account, projects] = await Promise.all([
+  const [user, context, account, projects] = await Promise.all([
     getAuthenticatedUser(),
+    getAccountContext(),
     getAccountSummary(),
     listProjects(),
   ]);
+  const internalDiagnosticsPreview = context?.role === "owner" && account && !account.diagnosticsEnabled;
 
   const overviewMetrics = [
     {
@@ -35,9 +37,26 @@ export default async function HomePage() {
     },
     {
       label: "Diagnostics",
-      value: account ? (account.diagnosticsEnabled ? "Included" : "Hidden") : "Protected",
-      helper: "Only Edge customers see the full source diagnostics view.",
-      tone: account ? (account.diagnosticsEnabled ? ("good" as const) : ("warn" as const)) : ("neutral" as const),
+      value: account
+        ? account.diagnosticsEnabled
+          ? "Included"
+          : internalDiagnosticsPreview
+            ? "Owner preview"
+            : "Hidden"
+        : "Protected",
+      helper: account
+        ? account.diagnosticsEnabled
+          ? "Full source diagnostics are visible in each project."
+          : internalDiagnosticsPreview
+            ? "Customer diagnostics are hidden on this plan, but you can inspect them from each project or run detail page."
+            : "Only Edge customers see the full source diagnostics view."
+        : "Diagnostics access is protected by account sign-in.",
+      tone: account
+        ? account.diagnosticsEnabled || internalDiagnosticsPreview
+          ? ("good" as const)
+          : ("warn" as const)
+        : ("neutral" as const),
+      href: user && projects[0] ? `/projects/${projects[0].id}/diagnostics` : undefined,
     },
   ];
 
