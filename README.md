@@ -48,7 +48,7 @@ Suggested first-time setup:
    - `APP_BASE_URL`
    - `GOOGLE_MAPS_API_KEY`
    - `GOOGLE_MAPS_PLACES_JSON`
-   - `COMPETITOR_URLS_JSON`
+   - `COMPETITOR_URLS_JSON` for standalone pipeline runs without project target URLs
    - Optional: `GEMINI_API_KEY`
    - Optional: `RESEND_API_KEY`
    - Optional: `RESEND_FROM_EMAIL`
@@ -91,7 +91,7 @@ The callback route creates the first `accounts` and `users` membership row for e
    - `APP_BASE_URL`
    - `GOOGLE_MAPS_API_KEY`
    - `GOOGLE_MAPS_PLACES_JSON`
-   - `COMPETITOR_URLS_JSON`
+   - `COMPETITOR_URLS_JSON` for standalone pipeline runs without project target URLs
 4. Optional:
    - `RESEND_API_KEY`
    - `RESEND_FROM_EMAIL`
@@ -114,6 +114,7 @@ The callback route creates the first `accounts` and `users` membership row for e
 
 - The pipeline auto-loads `.env` from the repo root at startup.
 - Google Maps Place Details is used for ratings, review-derived strengths/issues, hours, and website context.
+- App-triggered runs use competitor URLs stored on the project itself; `COMPETITOR_URLS_JSON` is only a fallback for direct pipeline execution.
 - Magic-link auth is now required for `/projects` and `/api` routes.
 - Projects are account-owned and tenant-scoped through Supabase Auth + RLS.
 - Project runs now queue through the API, then dispatch from the database queue through an internal worker route that persists reports, diagnostics, checkpoints, and analysis runs.

@@ -125,7 +125,7 @@ interface RunDiagnosticRow {
   signals_found: number;
   signals_expected: number | null;
   error_message: string | null;
-  detail_payload?: DiagnosticsTarget | null;
+  detail_payload?: Record<string, unknown> | null;
   created_at: string;
 }
 
@@ -174,6 +174,8 @@ function buildEmptyDiagnostics(): SourceDiagnostics {
       failure_ratio: 0,
     },
     google_maps: [],
+    reddit: [],
+    competitor_urls: [],
   };
 }
 
@@ -548,7 +550,26 @@ function diagnosticsFromCheckpointPayload(payload: Record<string, unknown> | nul
     return null;
   }
 
-  return diagnostics;
+  return {
+    source_stats: diagnostics.source_stats,
+    google_maps: diagnostics.google_maps ?? [],
+    reddit: diagnostics.reddit ?? [],
+    competitor_urls: diagnostics.competitor_urls ?? [],
+  };
+}
+
+function isDiagnosticsTargetPayload(payload: unknown): payload is DiagnosticsTarget {
+  if (!payload || typeof payload !== "object") {
+    return false;
+  }
+
+  const candidate = payload as Record<string, unknown>;
+  return Boolean(
+    typeof candidate.cafe === "string" &&
+      typeof candidate.override_present === "boolean" &&
+      typeof candidate.resolved === "boolean" &&
+      Array.isArray(candidate.attempts),
+  );
 }
 
 function mapDiagnosticsFromRows(rows: RunDiagnosticRow[], targets: ProjectTargetRow[]): SourceDiagnostics {
@@ -567,8 +588,10 @@ function mapDiagnosticsFromRows(rows: RunDiagnosticRow[], targets: ProjectTarget
       fail: failCount,
       failure_ratio: googleDiagnostics.length === 0 ? 0 : failCount / googleDiagnostics.length,
     },
+    reddit: [],
+    competitor_urls: [],
     google_maps: googleDiagnostics.map((row): DiagnosticsTarget => {
-      if (row.detail_payload?.cafe) {
+      if (isDiagnosticsTargetPayload(row.detail_payload)) {
         return row.detail_payload;
       }
 
@@ -576,7 +599,7 @@ function mapDiagnosticsFromRows(rows: RunDiagnosticRow[], targets: ProjectTarget
       return {
         cafe: target ? displayTargetName(target) : row.target_id,
         override_present: false,
-        resolved: row.status !== "failed",
+        resolved: row.status === "success",
         resolved_name: target?.resolved_name ?? undefined,
         attempts: row.error_message
           ? [
@@ -1186,12 +1209,11 @@ export async function getDiagnostics(projectId: string): Promise<SourceDiagnosti
   const checkpoints = checkpointsByRun.get(latestRun.id) ?? [];
   const reportCheckpoint = [...checkpoints].reverse().find((checkpoint) => checkpoint.stage === "report_generation");
   const checkpointDiagnostics = diagnosticsFromCheckpointPayload(reportCheckpoint?.payload ?? null);
-  const rows = diagnosticsRows;
-  if (checkpointDiagnostics && rows.every((row) => !row.detail_payload)) {
+  if (checkpointDiagnostics) {
     return checkpointDiagnostics;
   }
 
-  return mapDiagnosticsFromRows(rows, targets);
+  return mapDiagnosticsFromRows(diagnosticsRows, targets);
 }
 
 export async function listRuns(projectId: string): Promise<RunSummary[]> {
@@ -1290,12 +1312,11 @@ export async function getRunDiagnosticsByRunId(runId: string): Promise<SourceDia
   const checkpoints = checkpointsByRun.get(runId) ?? [];
   const reportCheckpoint = [...checkpoints].reverse().find((checkpoint) => checkpoint.stage === "report_generation");
   const checkpointDiagnostics = diagnosticsFromCheckpointPayload(reportCheckpoint?.payload ?? null);
-  const rows = diagnosticsRows;
-  if (checkpointDiagnostics && rows.every((row) => !row.detail_payload)) {
+  if (checkpointDiagnostics) {
     return checkpointDiagnostics;
   }
 
-  return mapDiagnosticsFromRows(rows, targets);
+  return mapDiagnosticsFromRows(diagnosticsRows, targets);
 }
 
 export function parseLeads(report: WeeklyIntelReport): ReportLead[] {

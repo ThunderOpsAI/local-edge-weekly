@@ -1063,6 +1063,35 @@ def normalize_cafe_entries(items: object, field_name: str, kind: str) -> List[Di
     return normalized
 
 
+def load_competitor_url_mapping(payload: Dict[str, object]) -> Dict[str, str]:
+    inline_mapping = payload.get("competitor_urls")
+    if isinstance(inline_mapping, dict):
+        normalized_inline: Dict[str, str] = {}
+        for cafe_name, url in inline_mapping.items():
+            if isinstance(cafe_name, str) and cafe_name.strip() and isinstance(url, str) and url.strip():
+                normalized_inline[cafe_name.strip()] = url.strip()
+        if normalized_inline:
+            return normalized_inline
+
+    mapping_raw = os.getenv("COMPETITOR_URLS_JSON")
+    if not mapping_raw:
+        return {}
+
+    try:
+        parsed = json.loads(mapping_raw)
+    except json.JSONDecodeError:
+        return {}
+
+    if not isinstance(parsed, dict):
+        return {}
+
+    normalized_env: Dict[str, str] = {}
+    for cafe_name, url in parsed.items():
+        if isinstance(cafe_name, str) and cafe_name.strip() and isinstance(url, str) and url.strip():
+            normalized_env[cafe_name.strip()] = url.strip()
+    return normalized_env
+
+
 def resolve_google_places(cafes: List[Cafe], location_focus: str) -> List[Dict[str, object]]:
     key = os.getenv("GOOGLE_MAPS_API_KEY")
     if not key:
@@ -1214,6 +1243,8 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
     stats = stats_dict()
     google_collected: List[Dict[str, object]] = []
     google_diagnostics: List[Dict[str, object]] = []
+    reddit_diagnostics: List[Dict[str, object]] = []
+    competitor_website_diagnostics: List[Dict[str, object]] = []
     key = os.getenv("GOOGLE_MAPS_API_KEY")
 
     for place in payload.get("google_places", []):
@@ -1221,6 +1252,16 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
             continue
 
         if place.get("request_exception"):
+            google_diagnostics.append(
+                {
+                    "cafe": place.get("cafe"),
+                    "override_present": bool(place.get("override_present")),
+                    "resolved": False,
+                    "attempts": place.get("attempts", []),
+                    "request_exception": True,
+                    "error_message": place.get("error_message"),
+                }
+            )
             mark_stats_fail(stats)
             continue
 
@@ -1231,6 +1272,7 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
                     "override_present": bool(place.get("override_present")),
                     "resolved": False,
                     "attempts": place.get("attempts", []),
+                    **({"error_message": place.get("error_message")} if place.get("error_message") else {}),
                     **({"reason": place.get("reason")} if place.get("reason") else {}),
                 }
             )
@@ -1281,15 +1323,19 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
     subreddits = ["melbourne", "australia", "coffee"]
     reddit_posts: List[Dict[str, object]] = []
     for cafe in cafes:
+        cafe_posts_found = 0
+        reddit_attempts: List[Dict[str, object]] = []
+        fetched_any = False
         for sub in subreddits:
             try:
                 url = f"https://www.reddit.com/r/{sub}/search.json"
                 params = {"q": cafe.name, "restrict_sr": "1", "sort": "new", "t": "week", "limit": 10}
                 resp = requests.get(url, params=params, headers=headers, timeout=20)
+                reddit_attempts.append({"subreddit": sub, "http_status": resp.status_code})
                 if resp.status_code != 200:
-                    mark_stats_fail(stats)
                     continue
 
+                fetched_any = True
                 data = resp.json()
                 posts = data.get("data", {}).get("children", [])
                 for post in posts:
@@ -1310,33 +1356,86 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
                             "happened_at": happened_at.isoformat(),
                         }
                     )
-                mark_stats_success(stats)
+                    cafe_posts_found += 1
             except requests.RequestException:
-                mark_stats_fail(stats)
+                reddit_attempts.append({"subreddit": sub, "error_message": "request_exception"})
+
+        reddit_diagnostics.append(
+            {
+                "cafe": cafe.name,
+                "fetched": fetched_any,
+                "posts_found": cafe_posts_found,
+                "subreddits": subreddits,
+                "attempts": reddit_attempts,
+            }
+        )
+        if fetched_any:
+            mark_stats_success(stats)
+        else:
+            mark_stats_fail(stats)
 
     competitor_websites: List[Dict[str, object]] = []
-    mapping_raw = os.getenv("COMPETITOR_URLS_JSON")
-    if mapping_raw:
+    website_keywords = [
+        "special",
+        "new menu",
+        "menu",
+        "price",
+        "limited time",
+        "booking",
+        "book now",
+        "functions",
+        "bistro",
+        "events",
+        "live music",
+        "happy hour",
+        "sports bar",
+    ]
+    competitor_url_mapping = load_competitor_url_mapping(payload)
+    for cafe_name, url in competitor_url_mapping.items():
         try:
-            mapping = json.loads(mapping_raw)
-            for cafe_name, url in mapping.items():
-                try:
-                    resp = requests.get(url, timeout=20)
-                    if resp.status_code != 200:
-                        mark_stats_fail(stats)
-                        continue
+            resp = requests.get(url, timeout=20)
+            if resp.status_code != 200:
+                competitor_website_diagnostics.append(
+                    {
+                        "cafe": cafe_name,
+                        "url": url,
+                        "fetched": False,
+                        "matched_keywords": [],
+                        "http_status": resp.status_code,
+                    }
+                )
+                mark_stats_fail(stats)
+                continue
 
-                    competitor_websites.append(
-                        {
-                            "cafe": cafe_name,
-                            "url": url,
-                            "content": re.sub(r"\s+", " ", resp.text.lower()),
-                        }
-                    )
-                    mark_stats_success(stats)
-                except requests.RequestException:
-                    mark_stats_fail(stats)
-        except json.JSONDecodeError:
+            text = re.sub(r"\s+", " ", resp.text.lower())
+            snippets = [keyword for keyword in website_keywords if keyword in text]
+            competitor_websites.append(
+                {
+                    "cafe": cafe_name,
+                    "url": url,
+                    "content": text,
+                }
+            )
+            competitor_website_diagnostics.append(
+                {
+                    "cafe": cafe_name,
+                    "url": url,
+                    "fetched": True,
+                    "matched_keywords": snippets,
+                    "http_status": resp.status_code,
+                }
+            )
+            mark_stats_success(stats)
+        except requests.RequestException:
+            competitor_website_diagnostics.append(
+                {
+                    "cafe": cafe_name,
+                    "url": url,
+                    "fetched": False,
+                    "matched_keywords": [],
+                    "error_message": "request_exception",
+                }
+            )
             mark_stats_fail(stats)
 
     next_payload = dict(payload)
@@ -1344,12 +1443,19 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
     next_payload["google_collected"] = google_collected
     next_payload["google_diagnostics"] = google_diagnostics
     next_payload["reddit_posts"] = reddit_posts
+    next_payload["reddit_diagnostics"] = reddit_diagnostics
     next_payload["competitor_websites"] = competitor_websites
+    next_payload["competitor_website_diagnostics"] = competitor_website_diagnostics
     stage_outputs = dict(next_payload.get("stage_outputs") or {})
     stage_outputs["source_collection"] = {
+        "google_targets_checked": len([place for place in payload.get("google_places", []) if isinstance(place, dict)]),
         "google_records": len(google_collected),
         "reddit_posts": len(reddit_posts),
         "competitor_websites": len(competitor_websites),
+        "reddit_targets_checked": len(reddit_diagnostics),
+        "reddit_targets_with_posts": sum(1 for item in reddit_diagnostics if item.get("posts_found")),
+        "competitor_websites_checked": len(competitor_website_diagnostics),
+        "competitor_websites_fetched": sum(1 for item in competitor_website_diagnostics if item.get("fetched")),
     }
     next_payload["stage_outputs"] = stage_outputs
     return next_payload
@@ -1462,6 +1568,8 @@ def signal_extraction(payload: Dict[str, object]) -> Dict[str, object]:
     next_payload["source_diagnostics"] = {
         "source_stats": payload.get("source_stats", stats_dict()),
         "google_maps": payload.get("google_diagnostics", []),
+        "reddit": payload.get("reddit_diagnostics", []),
+        "competitor_urls": payload.get("competitor_website_diagnostics", []),
     }
     stage_outputs = dict(next_payload.get("stage_outputs") or {})
     stage_outputs["signal_extraction"] = {

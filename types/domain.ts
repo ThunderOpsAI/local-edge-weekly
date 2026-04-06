@@ -34,6 +34,9 @@ export interface DiagnosticsTarget {
   resolved: boolean;
   resolved_name?: string;
   place_id?: string;
+  reason?: string;
+  request_exception?: boolean;
+  error_message?: string;
   rating?: number;
   reviews_count?: number;
   details_context?: {
@@ -56,6 +59,27 @@ export interface DiagnosticsTarget {
   }>;
 }
 
+export interface RedditDiagnosticsTarget {
+  cafe: string;
+  fetched: boolean;
+  posts_found: number;
+  subreddits: string[];
+  attempts: Array<{
+    subreddit: string;
+    http_status?: number | null;
+    error_message?: string | null;
+  }>;
+}
+
+export interface CompetitorWebsiteDiagnosticsTarget {
+  cafe: string;
+  url: string;
+  fetched: boolean;
+  matched_keywords: string[];
+  http_status?: number | null;
+  error_message?: string | null;
+}
+
 export interface SourceDiagnostics {
   source_stats: {
     success: number;
@@ -63,6 +87,8 @@ export interface SourceDiagnostics {
     failure_ratio: number;
   };
   google_maps: DiagnosticsTarget[];
+  reddit: RedditDiagnosticsTarget[];
+  competitor_urls: CompetitorWebsiteDiagnosticsTarget[];
 }
 
 export interface AccountSummary {

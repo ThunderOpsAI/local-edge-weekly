@@ -533,6 +533,9 @@ async function createPipelinePayload(project: ProjectRow, targets: ProjectTarget
   const targetNameMap = Object.fromEntries(
     normalizedTargets.map(({ target, name }) => [target.id, name]),
   );
+  const competitorUrls = Object.fromEntries(
+    competitors.map(({ target, name }) => [name, target.url]),
+  );
 
   return {
     last_scan_date: new Date().toISOString().slice(0, 10),
@@ -548,6 +551,7 @@ async function createPipelinePayload(project: ProjectRow, targets: ProjectTarget
       name,
       focus: `Competitor ${project.industry} in ${project.location}`,
     })),
+    competitor_urls: competitorUrls,
     target_name_map: targetNameMap,
   };
 }
@@ -607,10 +611,62 @@ async function updateRun(
   }
 }
 
-function computeCoverageScore(report: WeeklyIntelReport, diagnostics: SourceDiagnostics) {
-  const foundSignals = report.target_leads.length + report.competitor_delta.length;
-  const expectedSignals = Math.max(1, diagnostics.source_stats.success + diagnostics.source_stats.fail);
-  return Math.min(1, foundSignals / expectedSignals);
+type PersistableDiagnosticPayload =
+  | SourceDiagnostics["google_maps"][number]
+  | SourceDiagnostics["reddit"][number]
+  | SourceDiagnostics["competitor_urls"][number];
+
+type PersistableDiagnosticRow = {
+  run_id: string;
+  account_id: string;
+  target_id: string;
+  source: string;
+  status: "success" | "partial" | "failed";
+  signals_found: number;
+  signals_expected: number;
+  error_message: string | null;
+  detail_payload: PersistableDiagnosticPayload;
+};
+
+function isGoogleDiagnosticFailure(entry: SourceDiagnostics["google_maps"][number]) {
+  if (entry.request_exception) {
+    return true;
+  }
+
+  return entry.attempts.some((attempt) => {
+    const apiStatus = String(attempt.api_status || "").toUpperCase();
+    return apiStatus === "REQUEST_DENIED" || apiStatus === "OVER_QUERY_LIMIT" || apiStatus === "UNKNOWN_ERROR";
+  });
+}
+
+function normalizeDiagnostics(diagnostics: SourceDiagnostics): SourceDiagnostics {
+  return {
+    source_stats: diagnostics.source_stats,
+    google_maps: diagnostics.google_maps ?? [],
+    reddit: diagnostics.reddit ?? [],
+    competitor_urls: diagnostics.competitor_urls ?? [],
+  };
+}
+
+function computeCoverageScore(rawDiagnostics: SourceDiagnostics) {
+  const diagnostics = normalizeDiagnostics(rawDiagnostics);
+  const googleUnits = diagnostics.google_maps.map((entry) => {
+    if (entry.resolved) {
+      return 1;
+    }
+
+    return isGoogleDiagnosticFailure(entry) ? 0 : 0.5;
+  });
+  const redditUnits = diagnostics.reddit.map((entry) => (entry.fetched ? 1 : 0));
+  const competitorUnits = diagnostics.competitor_urls.map((entry) => (entry.fetched ? 1 : 0));
+  const sourceUnits: number[] = [...googleUnits, ...redditUnits, ...competitorUnits];
+
+  if (sourceUnits.length === 0) {
+    return 0;
+  }
+
+  const coveredUnits = sourceUnits.reduce((sum, value) => sum + value, 0);
+  return Math.min(1, coveredUnits / sourceUnits.length);
 }
 
 function mapSignalType(summary: string, entityScope: "target" | "competitor") {
@@ -694,15 +750,16 @@ async function persistDiagnostics(
   runId: string,
   accountId: string,
   targets: ProjectTargetRow[],
-  diagnostics: SourceDiagnostics,
+  rawDiagnostics: SourceDiagnostics,
 ) {
+  const diagnostics = normalizeDiagnostics(rawDiagnostics);
   const targetIdentities = buildTargetIdentities(
     targets,
     new Map(targets.map((target) => [target.id, cleanDisplayName(target.resolved_name ?? slugFromUrl(target.url))])),
   );
 
-  const rows = diagnostics.google_maps
-    .map((entry) => {
+  const googleRows = diagnostics.google_maps
+    .map((entry): PersistableDiagnosticRow | null => {
       const target = matchTargetIdentity(
         targetIdentities,
         [entry.resolved_name, entry.cafe, entry.details_context?.website ?? null],
@@ -718,28 +775,60 @@ async function persistDiagnostics(
         account_id: accountId,
         target_id: target.id,
         source: "google_maps",
-        status: entry.resolved ? "success" : "failed",
+        status: entry.resolved ? "success" : isGoogleDiagnosticFailure(entry) ? "failed" : "partial",
         signals_found: entry.resolved ? 1 : 0,
         signals_expected: 1,
-        error_message: entry.attempts[entry.attempts.length - 1]?.error_message ?? null,
+        error_message: entry.error_message ?? entry.attempts[entry.attempts.length - 1]?.error_message ?? null,
         detail_payload: entry,
       };
     })
-    .filter(
-      (
-        row,
-      ): row is {
-        run_id: string;
-        account_id: string;
-        target_id: string;
-        source: string;
-        status: "success" | "failed";
-        signals_found: number;
-        signals_expected: number;
-        error_message: string | null;
-        detail_payload: SourceDiagnostics["google_maps"][number];
-      } => Boolean(row),
-    );
+    .filter((row): row is PersistableDiagnosticRow => Boolean(row));
+
+  const redditRows = diagnostics.reddit
+    .map((entry): PersistableDiagnosticRow | null => {
+      const target = matchTargetIdentity(targetIdentities, [entry.cafe])?.target ?? null;
+      if (!target) {
+        return null;
+      }
+
+      return {
+        run_id: runId,
+        account_id: accountId,
+        target_id: target.id,
+        source: "reddit",
+        status: entry.fetched ? "success" : "failed",
+        signals_found: entry.posts_found > 0 ? 1 : 0,
+        signals_expected: 1,
+        error_message:
+          entry.attempts.find((attempt) => attempt.error_message)?.error_message ??
+          (entry.fetched ? null : "Reddit search failed"),
+        detail_payload: entry,
+      };
+    })
+    .filter((row): row is PersistableDiagnosticRow => Boolean(row));
+
+  const competitorRows = diagnostics.competitor_urls
+    .map((entry): PersistableDiagnosticRow | null => {
+      const target = matchTargetIdentity(targetIdentities, [entry.cafe, entry.url])?.target ?? null;
+      if (!target) {
+        return null;
+      }
+
+      return {
+        run_id: runId,
+        account_id: accountId,
+        target_id: target.id,
+        source: "competitor_url",
+        status: entry.fetched ? "success" : "failed",
+        signals_found: entry.matched_keywords.length > 0 ? 1 : 0,
+        signals_expected: 1,
+        error_message: entry.error_message ?? (entry.fetched ? null : "Competitor website fetch failed"),
+        detail_payload: entry,
+      };
+    })
+    .filter((row): row is PersistableDiagnosticRow => Boolean(row));
+
+  const rows = [...googleRows, ...redditRows, ...competitorRows];
 
   if (rows.length === 0) {
     return;
@@ -994,7 +1083,7 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
     const pipelineResult = await runPythonPipeline(pipelinePayload);
     const report = pipelineResult.report;
     const diagnostics = pipelineResult.source_diagnostics;
-    const coverageScore = computeCoverageScore(report, diagnostics);
+    const coverageScore = computeCoverageScore(diagnostics);
     const persistenceWarnings: string[] = [];
 
     const stageOutputs = pipelineResult.stage_outputs ?? {};
