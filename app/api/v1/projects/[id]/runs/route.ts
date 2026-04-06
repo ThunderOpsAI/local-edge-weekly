@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getAccountContext } from "@/lib/auth";
 import { buildApiLoginRedirect } from "@/lib/api-auth";
 import { triggerRunSchema } from "@/lib/api-contract";
-import { getDispatchRunsUrl } from "@/lib/internal-jobs";
+import { triggerQueuedRunsInBackground } from "@/lib/internal-jobs";
 import { getProject, listRuns } from "@/lib/repository";
 import { enqueueProjectRun } from "@/lib/run-executor";
 
@@ -67,17 +67,7 @@ export async function POST(
 
     const result = await enqueueProjectRun(params.id, context);
 
-    void fetch(getDispatchRunsUrl(), {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-internal-job-secret": internalJobSecret,
-      },
-      body: JSON.stringify({ limit: 1 }),
-      cache: "no-store",
-    }).catch((error) => {
-      console.error("Failed to trigger background run dispatcher", error);
-    });
+    triggerQueuedRunsInBackground(1, "manual-run");
 
     return NextResponse.json(
       {

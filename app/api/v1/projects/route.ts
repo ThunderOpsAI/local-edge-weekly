@@ -3,7 +3,7 @@ import { NextResponse } from "next/server";
 import { getAccountContext } from "@/lib/auth";
 import { buildApiLoginRedirect } from "@/lib/api-auth";
 import { createProjectSchema } from "@/lib/api-contract";
-import { getDispatchRunsUrl } from "@/lib/internal-jobs";
+import { triggerQueuedRunsInBackground } from "@/lib/internal-jobs";
 import { createProject, listProjects } from "@/lib/repository";
 import { enqueueProjectRun } from "@/lib/run-executor";
 
@@ -52,17 +52,7 @@ export async function POST(request: Request) {
       (process.env.NODE_ENV === "production" ? undefined : "local-edge-dev-secret");
 
     if (internalJobSecret) {
-      void fetch(getDispatchRunsUrl(), {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-internal-job-secret": internalJobSecret,
-        },
-        body: JSON.stringify({ limit: 1 }),
-        cache: "no-store",
-      }).catch((error) => {
-        console.error("Failed to trigger initial project run", error);
-      });
+      triggerQueuedRunsInBackground(1, "project-create");
     }
   } catch (error) {
     console.error("Project created but initial run could not be queued", error);
