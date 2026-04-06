@@ -1080,7 +1080,9 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
       coverageScore,
     };
   } catch (error) {
-    console.error("[RUNNER] Queued run failed", { runId, error });
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    console.error("[RUNNER] Queued run failed", { runId, error: errorMessage, stack: errorStack });
     await updateRun(supabase, runId, {
       status: "failed",
       stage: "failed",
@@ -1118,8 +1120,14 @@ export async function dispatchQueuedRuns(limit = 1): Promise<DispatchResult> {
       break;
     }
 
-    await processQueuedRun(claimed.id);
-    processedRunIds.push(claimed.id);
+    try {
+      await processQueuedRun(claimed.id);
+      processedRunIds.push(claimed.id);
+    } catch (error) {
+      // processQueuedRun already marked the run as failed and wrote a checkpoint
+      // before re-throwing. Don't let one bad run abort the rest of the batch.
+      console.error("[RUNNER] Run failed during dispatch, continuing batch", { runId: claimed.id, error: error instanceof Error ? error.message : String(error) });
+    }
   }
 
   console.log("[RUNNER] Dispatch finished", { processedRunIds, requeuedRunIds });
