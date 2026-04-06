@@ -31,8 +31,12 @@ COPY . .
 # Build Next.js standalone
 RUN npm run build
 
-# Copy static assets into standalone output so they're served correctly
+# Copy static assets into standalone output so they're served correctly.
+# Also copy Python source files: Next.js standalone server.js calls process.chdir(__dirname),
+# making cwd /app/.next/standalone/ at runtime. pipeline.py must live there so Python
+# can resolve `from pipeline import run_pipeline` from the subprocess cwd.
 RUN cp -r .next/static .next/standalone/.next/static && \
+    cp pipeline.py miner.py .next/standalone/ && \
     if [ -d public ]; then cp -r public .next/standalone/public; fi
 
 ENV NODE_ENV=production
