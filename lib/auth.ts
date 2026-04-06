@@ -16,16 +16,22 @@ export async function getAuthenticatedUser(): Promise<User | null> {
     return null;
   }
 
-  const {
-    data: { user },
-    error,
-  } = await supabase.auth.getUser();
+  try {
+    const {
+      data: { user },
+      error,
+    } = await supabase.auth.getUser();
 
-  if (error) {
+    if (error) {
+      console.error("Supabase getUser returned an error", error);
+      return null;
+    }
+
+    return user;
+  } catch (error) {
+    console.error("Supabase getUser threw unexpectedly", error);
     return null;
   }
-
-  return user;
 }
 
 export async function getAccountContext(): Promise<AccountContext | null> {

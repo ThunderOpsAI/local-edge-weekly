@@ -52,9 +52,14 @@ export async function middleware(request: NextRequest) {
     },
   });
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  let user = null;
+
+  try {
+    const result = await supabase.auth.getUser();
+    user = result.data.user;
+  } catch (error) {
+    console.error("Middleware failed to load Supabase user", error);
+  }
 
   if (!user && isProtectedPath(request.nextUrl.pathname)) {
     const loginUrl = request.nextUrl.clone();

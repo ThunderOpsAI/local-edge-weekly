@@ -7,6 +7,16 @@ RUN apt-get update && \
 
 WORKDIR /app
 
+# Railway injects service variables at build time for Dockerfile deploys,
+# but Dockerfiles must declare them explicitly to make them available.
+ARG NEXT_PUBLIC_SUPABASE_URL
+ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
+ARG APP_BASE_URL
+
+ENV NEXT_PUBLIC_SUPABASE_URL=${NEXT_PUBLIC_SUPABASE_URL}
+ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=${NEXT_PUBLIC_SUPABASE_ANON_KEY}
+ENV APP_BASE_URL=${APP_BASE_URL}
+
 # Install Python dependencies first (cached layer)
 COPY requirements.txt ./
 RUN pip3 install --break-system-packages -r requirements.txt
