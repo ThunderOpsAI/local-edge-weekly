@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 
 import { ensureAccountOwnership } from "@/lib/account-provisioning";
+import { buildPublicUrl } from "@/lib/request-url";
 import { getSupabaseServerClient } from "@/lib/supabase/server";
 
 export async function GET(request: Request) {
@@ -10,17 +11,17 @@ export async function GET(request: Request) {
   const safeNext = next.startsWith("/") ? next : "/";
 
   if (!code) {
-    return NextResponse.redirect(new URL(`/login?error=missing_code`, requestUrl.origin));
+    return NextResponse.redirect(buildPublicUrl(request, `/login?error=missing_code`));
   }
 
   const supabase = getSupabaseServerClient();
   if (!supabase) {
-    return NextResponse.redirect(new URL(`/login?error=supabase_not_configured`, requestUrl.origin));
+    return NextResponse.redirect(buildPublicUrl(request, `/login?error=supabase_not_configured`));
   }
 
   const { error } = await supabase.auth.exchangeCodeForSession(code);
   if (error) {
-    return NextResponse.redirect(new URL(`/login?error=auth_callback_failed`, requestUrl.origin));
+    return NextResponse.redirect(buildPublicUrl(request, `/login?error=auth_callback_failed`));
   }
 
   const {
@@ -28,15 +29,15 @@ export async function GET(request: Request) {
   } = await supabase.auth.getUser();
 
   if (!user?.email) {
-    return NextResponse.redirect(new URL(`/login?error=user_missing`, requestUrl.origin));
+    return NextResponse.redirect(buildPublicUrl(request, `/login?error=user_missing`));
   }
 
   try {
     await ensureAccountOwnership(user.id, user.email);
   } catch (error) {
     console.error("Failed to provision account during auth callback", error);
-    return NextResponse.redirect(new URL(`/login?error=account_setup_failed`, requestUrl.origin));
+    return NextResponse.redirect(buildPublicUrl(request, `/login?error=account_setup_failed`));
   }
 
-  return NextResponse.redirect(new URL(safeNext, requestUrl.origin));
+  return NextResponse.redirect(buildPublicUrl(request, safeNext));
 }

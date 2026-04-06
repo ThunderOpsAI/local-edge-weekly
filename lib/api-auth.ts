@@ -1,8 +1,9 @@
 import { NextResponse } from "next/server";
+import { buildPublicUrl } from "@/lib/request-url";
 
 export function buildApiLoginRedirect(request: Request) {
   const requestUrl = new URL(request.url);
-  const loginUrl = new URL("/login", requestUrl.origin);
+  const loginUrl = buildPublicUrl(request, "/login");
   loginUrl.searchParams.set("next", requestUrl.pathname);
   return NextResponse.json(
     {

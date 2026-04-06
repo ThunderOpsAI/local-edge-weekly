@@ -1,5 +1,6 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { createServerClient } from "@supabase/ssr";
+import { buildPublicUrl } from "@/lib/request-url";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
 const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -69,7 +70,7 @@ export async function middleware(request: NextRequest) {
   }
 
   if (user && request.nextUrl.pathname === "/login") {
-    return NextResponse.redirect(new URL("/", request.url));
+    return NextResponse.redirect(buildPublicUrl(request, "/"));
   }
 
   return response;
