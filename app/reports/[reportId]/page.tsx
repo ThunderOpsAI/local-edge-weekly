@@ -5,7 +5,14 @@ import { ComparisonTable } from "@/components/comparison-table";
 import { OpportunityGrid } from "@/components/opportunity-grid";
 import { ReportApprovalButton } from "@/components/report-approval-button";
 import { ReportOverview } from "@/components/report-overview";
-import { getProject, getReportById, getRunDiagnosticsByRunId, parseCompetitorDeltas, parseLeads } from "@/lib/repository";
+import {
+  getCompetitorSnapshotsByRunId,
+  getProject,
+  getReportById,
+  getRunDiagnosticsByRunId,
+  parseCompetitorDeltas,
+  parseLeads,
+} from "@/lib/repository";
 
 export default async function ReportDetailPage({
   params,
@@ -17,9 +24,10 @@ export default async function ReportDetailPage({
     notFound();
   }
 
-  const [project, diagnostics] = await Promise.all([
+  const [project, diagnostics, snapshots] = await Promise.all([
     getProject(report.projectId),
     getRunDiagnosticsByRunId(report.runId),
+    getCompetitorSnapshotsByRunId(report.runId),
   ]);
   if (!project) {
     notFound();
@@ -86,7 +94,13 @@ export default async function ReportDetailPage({
         </div>
       </div>
 
-      <ReportOverview report={report.body} leads={leads} deltas={deltas} />
+      <ReportOverview
+        report={report.body}
+        leads={leads}
+        deltas={deltas}
+        decisionPack={report.decisionPack}
+        snapshots={snapshots}
+      />
       <OpportunityGrid cards={opportunities} />
       <ComparisonTable rows={comparison} />
     </section>

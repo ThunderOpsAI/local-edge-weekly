@@ -5,7 +5,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AccountContext } from "@/lib/auth";
 import { sendRunSummaryEmail } from "@/lib/email";
 import { getSupabaseServiceRoleClient } from "@/lib/supabase/service-role";
-import type { ProjectLifecycleStatus, SourceDiagnostics, WeeklyIntelReport } from "@/types/domain";
+import type { DecisionPack, ProjectLifecycleStatus, SourceDiagnostics, WeeklyIntelReport } from "@/types/domain";
 
 const PYTHON_BIN =
   process.env.PYTHON_BIN ??
@@ -76,6 +76,8 @@ interface PipelineFinalOutput {
   report: WeeklyIntelReport;
   noise_log: Array<Record<string, unknown>>;
   resolved_signals: PipelineSignal[];
+  pressure_scores?: Array<Record<string, unknown>>;
+  decision_pack?: DecisionPack;
   source_diagnostics: SourceDiagnostics;
   dashboard_summary: string;
   stage_outputs?: Record<string, Record<string, unknown>>;
@@ -896,6 +898,7 @@ async function persistReport(
   report: WeeklyIntelReport,
   coverageScore: number,
   previousReport: WeeklyIntelReport | null,
+  decisionPackId?: string | null,
 ) {
   const latestRating = report.competitor_delta.find((entry) => /rating/i.test(entry[1]));
   const previousRating = previousReport?.competitor_delta.find((entry) => /rating/i.test(entry[1]));
@@ -908,6 +911,7 @@ async function persistReport(
     approved_at: new Date().toISOString(),
     body: {
       ...report,
+      decision_pack_id: decisionPackId ?? report.decision_pack_id ?? null,
       delta_summary: {
         rating_change: latestRating?.[1] && previousRating?.[1] ? `${previousRating[1]} -> ${latestRating[1]}` : null,
         signal_count_change: previousReport
@@ -942,6 +946,82 @@ async function loadPreviousReport(
   }
 
   return (data?.body as WeeklyIntelReport | undefined) ?? null;
+}
+
+async function loadPreviousSignals(
+  supabase: SupabaseClient,
+  projectId: string,
+  accountId: string,
+) {
+  const { data, error } = await supabase
+    .from("signals")
+    .select("source, signal_type, raw_value, structured_insight, confidence_score, entity_scope, created_at")
+    .eq("project_id", projectId)
+    .eq("account_id", accountId)
+    .order("created_at", { ascending: false })
+    .limit(40);
+
+  if (error) {
+    throw error;
+  }
+
+  return (data ?? []).map((signal) => ({
+    source: signal.source,
+    signal_type: signal.signal_type,
+    raw_value: signal.raw_value,
+    structured_insight: signal.structured_insight,
+    confidence_score: signal.confidence_score,
+    entity_scope: signal.entity_scope,
+    created_at: signal.created_at,
+  }));
+}
+
+function readDecisionMove(pack: DecisionPack | undefined, key: "primary_move" | "secondary_move") {
+  const move = pack?.[key];
+  return move && typeof move === "object" ? move : null;
+}
+
+async function persistDecisionPack(
+  supabase: SupabaseClient,
+  runId: string,
+  accountId: string,
+  projectId: string,
+  decisionPack: DecisionPack | undefined,
+) {
+  if (!decisionPack) {
+    return null;
+  }
+
+  const rawDecisionPack = decisionPack as DecisionPack & { week_label?: string | null };
+  const primaryMove = readDecisionMove(decisionPack, "primary_move");
+  const secondaryMove = readDecisionMove(decisionPack, "secondary_move");
+  const { data, error } = await supabase
+    .from("decision_packs")
+    .insert({
+      run_id: runId,
+      account_id: accountId,
+      project_id: projectId,
+      week_label: decisionPack.weekLabel ?? rawDecisionPack.week_label ?? null,
+      primary_move_type: primaryMove?.type ?? null,
+      primary_move_title: primaryMove?.title ?? null,
+      secondary_move_type: secondaryMove?.type ?? null,
+      pressure_summary_json: decisionPack.pressure_summary ?? [],
+      why_now_md: decisionPack.why_now ?? "",
+      evidence_json: decisionPack.evidence_items ?? [],
+      expected_effect_md: decisionPack.expected_effect ?? "",
+      confidence_score: decisionPack.confidence_score ?? null,
+      execution_assets_json: decisionPack.execution_assets ?? {},
+      watch_next_week_json: decisionPack.watch_next_week ?? [],
+      source_flags_json: decisionPack.source_flags ?? {},
+    })
+    .select("id")
+    .single();
+
+  if (error) {
+    throw error;
+  }
+
+  return data.id as string;
 }
 
 async function runPythonPipeline(payload: Record<string, unknown>) {
@@ -1066,6 +1146,7 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
   const { project, targets } = loaded;
   const owner = await loadAccountOwner(supabase, run.account_id);
   const previousReport = await loadPreviousReport(supabase, project.id, run.account_id);
+  const previousSignals = await loadPreviousSignals(supabase, project.id, run.account_id);
 
   try {
     await updateRun(supabase, runId, {
@@ -1074,7 +1155,10 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
       started_at: run.started_at ?? new Date().toISOString(),
     });
 
-    const pipelinePayload = await createPipelinePayload(project, targets);
+    const pipelinePayload = {
+      ...(await createPipelinePayload(project, targets)),
+      previous_signals: previousSignals,
+    };
     console.log("[RUNNER] Running Python pipeline", {
       runId,
       projectId: project.id,
@@ -1093,7 +1177,20 @@ export async function processQueuedRun(runId: string): Promise<PersistedRunResul
     }
 
     await updateRun(supabase, runId, { stage: "report_generation" });
-    await persistReport(supabase, runId, run.account_id, project.id, report, coverageScore, previousReport);
+    let decisionPackId: string | null = null;
+    try {
+      decisionPackId = await persistDecisionPack(
+        supabase,
+        runId,
+        run.account_id,
+        project.id,
+        pipelineResult.decision_pack,
+      );
+    } catch (error) {
+      persistenceWarnings.push(error instanceof Error ? error.message : "Failed to persist decision pack");
+    }
+
+    await persistReport(supabase, runId, run.account_id, project.id, report, coverageScore, previousReport, decisionPackId);
 
     try {
       await persistDiagnostics(supabase, runId, run.account_id, targets, diagnostics);

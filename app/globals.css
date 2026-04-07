@@ -475,6 +475,121 @@ h3 {
   font-size: 1.25rem;
 }
 
+.decision-pack-hero {
+  display: grid;
+  gap: 20px;
+}
+
+.decision-pack-header h2 {
+  max-width: 880px;
+  margin-top: 8px;
+  font-size: clamp(1.65rem, 2.8vw, 2.6rem);
+  line-height: 1.08;
+}
+
+.decision-pack-header .muted {
+  max-width: 920px;
+}
+
+.decision-pack-score {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+  min-width: 132px;
+}
+
+.decision-pack-score strong {
+  font-size: 1.6rem;
+  line-height: 1;
+}
+
+.pressure-chip-row,
+.decision-toggle,
+.asset-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+
+.decision-pack-grid > .report-callout {
+  grid-column: span 6;
+}
+
+.decision-pack-grid > .full-span {
+  grid-column: 1 / -1;
+}
+
+.asset-list {
+  display: grid;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.asset-row {
+  justify-content: space-between;
+  padding: 12px 0;
+  border-top: 1px solid var(--line);
+}
+
+.asset-row:first-child {
+  border-top: 0;
+}
+
+.copy-button {
+  min-height: 36px;
+  padding: 8px 12px;
+  font-size: 0.82rem;
+}
+
+.evidence-row {
+  padding: 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.snapshot-card {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.snapshot-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.snapshot-frame {
+  display: grid;
+  gap: 10px;
+}
+
+.snapshot-frame img,
+.snapshot-placeholder {
+  width: 100%;
+  min-height: 180px;
+  border-radius: 16px;
+  border: 1px solid var(--line);
+  background: rgba(15, 23, 42, 0.04);
+}
+
+.snapshot-frame img {
+  display: block;
+  object-fit: cover;
+}
+
+.snapshot-placeholder {
+  display: grid;
+  place-items: center;
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .report-callout,
 .playbook-row {
   padding: 18px;
@@ -947,6 +1062,7 @@ th {
   .card-grid,
   .project-hero-grid,
   .owner-briefing-grid,
+  .snapshot-grid,
   .trend-grid,
   .form-grid,
   .plan-selector,
@@ -978,6 +1094,10 @@ th {
   .checkpoint-row {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .decision-pack-score {
+    justify-items: start;
   }
 
   .hero-features {

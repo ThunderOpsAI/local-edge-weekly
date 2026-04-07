@@ -1,12 +1,16 @@
-import type { CompetitorDelta, ReportLead, WeeklyIntelReport } from "@/types/domain";
+import { CompetitorSnapshotPanel } from "@/components/competitor-snapshot-panel";
+import { DecisionPackHero } from "@/components/decision-pack-hero";
+import type { CompetitorDelta, CompetitorSnapshot, DecisionPack, ReportLead, WeeklyIntelReport } from "@/types/domain";
 
 interface ReportOverviewProps {
   report: WeeklyIntelReport;
   leads: ReportLead[];
   deltas: CompetitorDelta[];
+  decisionPack?: DecisionPack | null;
+  snapshots?: CompetitorSnapshot[];
 }
 
-export function ReportOverview({ report, leads, deltas }: ReportOverviewProps) {
+export function ReportOverview({ report, leads, deltas, decisionPack, snapshots = [] }: ReportOverviewProps) {
   const primaryLead = leads[0];
   const rankedDeltas = [...deltas].sort((a, b) => b.impact - a.impact);
   const topDelta = rankedDeltas[0];
@@ -22,6 +26,9 @@ export function ReportOverview({ report, leads, deltas }: ReportOverviewProps) {
 
   return (
     <section className="stack report-briefing">
+      {decisionPack ? <DecisionPackHero decisionPack={decisionPack} /> : null}
+      <CompetitorSnapshotPanel snapshots={snapshots} />
+
       <article className="panel hero-panel owner-briefing">
         <div className="section-header owner-briefing-header">
           <div>

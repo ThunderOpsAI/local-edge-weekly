@@ -57,6 +57,148 @@ function isoForWeek(weeksAgo, hour = 9) {
   return date.toISOString();
 }
 
+function isoWeekLabel(value) {
+  const date = new Date(value);
+  const target = new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+  const dayNumber = target.getUTCDay() || 7;
+  target.setUTCDate(target.getUTCDate() + 4 - dayNumber);
+  const yearStart = new Date(Date.UTC(target.getUTCFullYear(), 0, 1));
+  const weekNumber = Math.ceil(((target - yearStart) / 86400000 + 1) / 7);
+  return `${target.getUTCFullYear()}-W${String(weekNumber).padStart(2, "0")}`;
+}
+
+function inferMoveType(story) {
+  const text = `${story.gap} ${story.hook} ${story.deltas.map((delta) => delta[1]).join(" ")}`.toLowerCase();
+  if (/late|9pm|night/.test(text)) {
+    return "extend_late_night";
+  }
+  if (/lunch|office|worker/.test(text)) {
+    return "win_lunch";
+  }
+  if (/bundle|combo|box|pack|group|share/.test(text)) {
+    return "launch_bundle";
+  }
+  if (/limited|three days|deadline|this week/.test(text)) {
+    return "test_limited_offer";
+  }
+  if (/free delivery|discount|value/.test(text)) {
+    return "defend_value";
+  }
+  if (/sauce|flavour|flavor|signature|crispy|boneless/.test(text)) {
+    return "highlight_signature";
+  }
+  return "hold_position";
+}
+
+function moveTitle(moveType) {
+  return {
+    launch_bundle: "Launch a named bundle this week",
+    defend_value: "Defend value without copying the discount",
+    win_lunch: "Win the office lunch window",
+    extend_late_night: "Extend the late-night offer",
+    push_group_order: "Push the group order",
+    highlight_signature: "Make the signature item louder",
+    test_limited_offer: "Test a short limited offer",
+    hold_position: "Hold position and keep watching",
+  }[moveType] ?? "Hold position and keep watching";
+}
+
+function pressureTypeFromText(text) {
+  const lower = text.toLowerCase();
+  if (/late|9pm|night/.test(lower)) {
+    return "late_night_pressure";
+  }
+  if (/lunch|office|student/.test(lower)) {
+    return "lunch_office_pressure";
+  }
+  if (/bundle|combo|box|pack|group|share|family/.test(lower)) {
+    return "bundle_pressure";
+  }
+  if (/limited|special|free|deadline|new/.test(lower)) {
+    return "urgency_offer_pressure";
+  }
+  if (/delivery|deal|value|price|minimum spend/.test(lower)) {
+    return "delivery_value_pressure";
+  }
+  return "differentiation_pressure";
+}
+
+function buildDecisionPack(story, timestamp) {
+  const primaryMoveType = inferMoveType(story);
+  const secondaryMoveType = primaryMoveType === "launch_bundle" ? "win_lunch" : "launch_bundle";
+  const evidenceItems = story.deltas.slice(0, 4).map(([competitor, summary], index) => ({
+    competitor,
+    signal_type: "demo_competitor_movement",
+    week: isoWeekLabel(timestamp),
+    source: summary.includes("Reddit") ? "reddit" : summary.includes("wording") || summary.includes("language") ? "competitor_url" : "google_maps",
+    summary,
+    demo_flag: true,
+    rank: index + 1,
+  }));
+  const pressureSummary = story.deltas.slice(0, 4).map(([competitor, summary, impact]) => ({
+    type: pressureTypeFromText(summary),
+    level: impact >= 8 ? "high" : impact >= 6 ? "medium" : "low",
+    score: impact,
+    competitors: [{ competitor, score: impact }],
+  }));
+  const snapshotCandidates = story.deltas
+    .filter(([, summary, impact]) => impact >= 7 && /wording|language|website|bundle|delivery|lunch|late|box|pack/i.test(summary))
+    .slice(0, 2)
+    .map(([competitor, summary, impact]) => {
+      const target = targets.find((item) => item.name === competitor);
+      return {
+        competitor,
+        url: target?.url ?? null,
+        trigger_score: impact,
+        current_image_url: null,
+        previous_image_url: null,
+        diff_summary: summary,
+        capture_note: "Demo snapshot metadata. Screenshot capture is wired as optional storage metadata.",
+        demo_flag: true,
+      };
+    });
+
+  return {
+    week_label: isoWeekLabel(timestamp),
+    primary_move: {
+      type: primaryMoveType,
+      title: moveTitle(primaryMoveType),
+      score: 0.86,
+    },
+    secondary_move: {
+      type: secondaryMoveType,
+      title: moveTitle(secondaryMoveType),
+      score: 0.62,
+    },
+    pressure_summary: pressureSummary,
+    why_now: story.gap,
+    evidence_items: evidenceItems,
+    expected_effect: "Best hypothesis: give Seoul Crunch one memorable offer that answers the strongest competitor pressure without over-discounting.",
+    confidence_score: Math.max(72, Math.min(92, story.deltas[0]?.[2] ? story.deltas[0][2] * 10 : 82)),
+    execution_assets: {
+      owner_brief: story.hook,
+      staff_brief: "Use the same offer name at the counter, in delivery copy, and in any customer replies this week.",
+      promo_lines: [
+        "One clear move for this week.",
+        "Built for the CBD rush.",
+        "Order it before the next competitor move.",
+      ],
+      sms_caption: story.hook,
+      delivery_description: story.hook,
+    },
+    watch_next_week: [
+      "Check whether Gami escalates or holds its offer language.",
+      "Check whether Sam Sam repeats the same bundle or lunch cue.",
+      "Watch Reddit for competitor praise where Seoul Crunch is absent.",
+    ],
+    source_flags: {
+      demo_flag: true,
+      sources_fired: ["google_reviews", "reddit", "website_delta"],
+      snapshot_candidates: snapshotCandidates,
+    },
+  };
+}
+
 const targets = [
   {
     key: "target",
@@ -554,6 +696,7 @@ async function createRunStory(activeAccountId, projectId, targetsByName, story) 
   const completedAt = isoForWeek(story.weeksAgo, 8);
   const diagnostics = buildDiagnostics(story);
   const report = buildReport(story, createdAt);
+  const decisionPack = buildDecisionPack(story, createdAt);
 
   const { data: run, error: runError } = await supabase
     .from("analysis_runs")
@@ -620,6 +763,33 @@ async function createRunStory(activeAccountId, projectId, targetsByName, story) 
     throw checkpointError;
   }
 
+  const { data: decisionPackRecord, error: decisionPackError } = await supabase
+    .from("decision_packs")
+    .insert({
+      run_id: run.id,
+      account_id: activeAccountId,
+      project_id: projectId,
+      week_label: decisionPack.week_label,
+      primary_move_type: decisionPack.primary_move.type,
+      primary_move_title: decisionPack.primary_move.title,
+      secondary_move_type: decisionPack.secondary_move.type,
+      pressure_summary_json: decisionPack.pressure_summary,
+      why_now_md: decisionPack.why_now,
+      evidence_json: decisionPack.evidence_items,
+      expected_effect_md: decisionPack.expected_effect,
+      confidence_score: decisionPack.confidence_score,
+      execution_assets_json: decisionPack.execution_assets,
+      watch_next_week_json: decisionPack.watch_next_week,
+      source_flags_json: decisionPack.source_flags,
+      created_at: createdAt,
+    })
+    .select("id")
+    .single();
+
+  if (decisionPackError) {
+    throw decisionPackError;
+  }
+
   const { data: reportRecord, error: reportError } = await supabase
     .from("reports")
     .insert({
@@ -628,7 +798,10 @@ async function createRunStory(activeAccountId, projectId, targetsByName, story) 
       project_id: projectId,
       version: 1,
       status: "approved",
-      body: report,
+      body: {
+        ...report,
+        decision_pack_id: decisionPackRecord.id,
+      },
       coverage_score: story.coverage,
       approved_at: completedAt,
       created_at: createdAt,
@@ -700,6 +873,7 @@ async function createRunStory(activeAccountId, projectId, targetsByName, story) 
         kind: "demo_delivery_market_gap",
         impact: 8,
         confidence: 0.88,
+        demo_flag: true,
       },
       confidence_score: 0.88,
       entity_scope: "target",
@@ -719,6 +893,7 @@ async function createRunStory(activeAccountId, projectId, targetsByName, story) 
           venue: name,
           impact,
           confidence: 0.84,
+          demo_flag: true,
         },
         confidence_score: 0.84,
         entity_scope: name.includes("Seoul Crunch") ? "target" : "competitor",

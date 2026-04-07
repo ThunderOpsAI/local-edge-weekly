@@ -8,6 +8,15 @@ export type ProjectLifecycleStatus =
   | "failed";
 export type PlanType = "trial" | "solo" | "edge";
 export type RunCadence = "weekly" | "monthly";
+export type DecisionMoveType =
+  | "launch_bundle"
+  | "defend_value"
+  | "win_lunch"
+  | "extend_late_night"
+  | "push_group_order"
+  | "highlight_signature"
+  | "test_limited_offer"
+  | "hold_position";
 
 export interface ReportLead {
   name: string;
@@ -26,6 +35,73 @@ export interface WeeklyIntelReport {
   market_status: MarketStatus;
   competitor_delta: [string, string, number][];
   target_leads: [string, string, string][];
+  decision_pack_id?: string | null;
+}
+
+export interface DecisionMove {
+  type: DecisionMoveType | string;
+  title: string;
+  score: number;
+}
+
+export interface PressureSummaryItem {
+  type: string;
+  level: "high" | "medium" | "low" | string;
+  score?: number;
+  competitors?: Array<{
+    competitor: string;
+    score: number;
+  }>;
+}
+
+export interface DecisionEvidenceItem {
+  competitor: string;
+  signal_type: string;
+  week?: string | null;
+  source: string;
+  summary?: string;
+  demo_flag?: boolean;
+}
+
+export interface DecisionExecutionAssets {
+  owner_brief: string;
+  staff_brief: string;
+  promo_lines: string[];
+  sms_caption: string;
+  delivery_description: string;
+}
+
+export interface CompetitorSnapshot {
+  competitor: string;
+  url?: string | null;
+  trigger_score?: number | null;
+  current_image_url?: string | null;
+  previous_image_url?: string | null;
+  diff_summary: string;
+  capture_note?: string | null;
+  demo_flag?: boolean;
+}
+
+export interface DecisionPack {
+  id?: string;
+  projectId?: string;
+  runId?: string;
+  weekLabel?: string | null;
+  primary_move: DecisionMove;
+  secondary_move?: DecisionMove | null;
+  pressure_summary: PressureSummaryItem[];
+  why_now: string;
+  evidence_items: DecisionEvidenceItem[];
+  expected_effect: string;
+  confidence_score: number;
+  execution_assets: DecisionExecutionAssets;
+  watch_next_week: string[];
+  source_flags?: {
+    demo_flag?: boolean;
+    sources_fired?: string[];
+    snapshot_candidates?: CompetitorSnapshot[];
+    [key: string]: unknown;
+  };
 }
 
 export interface DiagnosticsTarget {
@@ -137,6 +213,7 @@ export interface ReportRecord {
   createdAt: string;
   approvedAt?: string | null;
   body: WeeklyIntelReport;
+  decisionPack?: DecisionPack | null;
 }
 
 export interface RunSummary {

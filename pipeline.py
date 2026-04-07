@@ -9,6 +9,8 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import requests
 
+from decision_engine import generate_decision_pack
+
 
 def load_dotenv_file(dotenv_path: str) -> None:
     if not os.path.exists(dotenv_path):
@@ -2021,6 +2023,40 @@ def report_generation(payload: Dict[str, object]) -> Dict[str, object]:
     return next_payload
 
 
+def decision_pack_generation(payload: Dict[str, object]) -> Dict[str, object]:
+    context = {
+        "project_id": payload.get("project_id"),
+        "project_name": payload.get("project_name"),
+        "industry": payload.get("industry"),
+        "location_focus": payload.get("location_focus"),
+        "targets": payload.get("targets", []),
+        "competition": payload.get("competition", []),
+        "pressure_scores": payload.get("pressure_scores", []),
+        "resolved_signals": payload.get("resolved_signals", []),
+        "previous_signals": payload.get("previous_signals", []),
+        "source_diagnostics": payload.get("source_diagnostics", {}),
+    }
+    decision_pack = generate_decision_pack(context)
+
+    next_payload = dict(payload)
+    next_payload["decision_pack"] = decision_pack
+    stage_outputs = dict(next_payload.get("stage_outputs") or {})
+    stage_outputs["decision_pack_generation"] = {
+        "primary_move_type": decision_pack.get("primary_move", {}).get("type")
+        if isinstance(decision_pack.get("primary_move"), dict)
+        else None,
+        "confidence_score": decision_pack.get("confidence_score"),
+        "evidence_items": len(decision_pack.get("evidence_items", []))
+        if isinstance(decision_pack.get("evidence_items"), list)
+        else 0,
+        "snapshot_candidates": len(decision_pack.get("source_flags", {}).get("snapshot_candidates", []))
+        if isinstance(decision_pack.get("source_flags"), dict)
+        else 0,
+    }
+    next_payload["stage_outputs"] = stage_outputs
+    return next_payload
+
+
 def notification(payload: Dict[str, object]) -> Dict[str, object]:
     next_payload = dict(payload)
     next_payload["final_output"] = {
@@ -2028,6 +2064,7 @@ def notification(payload: Dict[str, object]) -> Dict[str, object]:
         "noise_log": payload.get("noise_log", []),
         "resolved_signals": payload.get("resolved_signals", []),
         "pressure_scores": payload.get("pressure_scores", []),
+        "decision_pack": payload.get("decision_pack", {}),
         "source_diagnostics": payload.get("source_diagnostics", {}),
         "dashboard_summary": payload.get("dashboard_summary", ""),
         "stage_outputs": payload.get("stage_outputs", {}),
@@ -2048,6 +2085,7 @@ STAGE_FUNCTIONS: Dict[str, Callable[[Dict[str, object]], Dict[str, object]]] = {
     "signal_extraction": signal_extraction,
     "pressure_scoring": pressure_scoring,
     "report_generation": report_generation,
+    "decision_pack_generation": decision_pack_generation,
     "notification": notification,
 }
 

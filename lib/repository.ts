@@ -7,9 +7,11 @@ import type {
   AdminReportRow,
   AdminRunRow,
   ComparisonRow,
+  CompetitorSnapshot,
   CompetitorDelta,
   CoverageBlock,
   DashboardData,
+  DecisionPack,
   DashboardMetric,
   DiagnosticsTarget,
   OpportunityCard,
@@ -115,6 +117,24 @@ interface ReportRow {
   created_at: string;
 }
 
+interface DecisionPackRow {
+  id: string;
+  project_id: string;
+  run_id: string;
+  week_label: string | null;
+  primary_move_type: string | null;
+  primary_move_title: string | null;
+  secondary_move_type: string | null;
+  pressure_summary_json: DecisionPack["pressure_summary"] | null;
+  why_now_md: string | null;
+  evidence_json: DecisionPack["evidence_items"] | null;
+  expected_effect_md: string | null;
+  confidence_score: number | null;
+  execution_assets_json: DecisionPack["execution_assets"] | null;
+  watch_next_week_json: DecisionPack["watch_next_week"] | null;
+  source_flags_json: DecisionPack["source_flags"] | null;
+}
+
 interface RunDiagnosticRow {
   id: string;
   run_id: string;
@@ -206,6 +226,20 @@ function getPlanSettings(plan: PlanType) {
   return PLAN_SETTINGS[plan];
 }
 
+function isMissingRelationError(error: unknown, relationName: string) {
+  const message =
+    typeof error === "object" &&
+    error !== null &&
+    "message" in error &&
+    typeof error.message === "string"
+      ? error.message
+      : error instanceof Error
+        ? error.message
+        : "";
+
+  return message.toLowerCase().includes(relationName.toLowerCase());
+}
+
 function mapTargetSummary(target: ProjectTargetRow): TargetSummary {
   return {
     id: target.id,
@@ -229,6 +263,62 @@ function mapReportRecord(row: ReportRow): ReportRecord {
     approvedAt: row.approved_at ?? null,
     body: row.body,
   };
+}
+
+function mapDecisionPackRow(row: DecisionPackRow): DecisionPack {
+  return {
+    id: row.id,
+    projectId: row.project_id,
+    runId: row.run_id,
+    weekLabel: row.week_label,
+    primary_move: {
+      type: row.primary_move_type ?? "hold_position",
+      title: row.primary_move_title ?? "Hold position and keep watching",
+      score: row.confidence_score ? row.confidence_score / 100 : 0.5,
+    },
+    secondary_move: row.secondary_move_type
+      ? {
+          type: row.secondary_move_type,
+          title: row.secondary_move_type.replace(/_/g, " "),
+          score: 0.5,
+        }
+      : null,
+    pressure_summary: row.pressure_summary_json ?? [],
+    why_now: row.why_now_md ?? "No decision rationale was stored for this run.",
+    evidence_items: row.evidence_json ?? [],
+    expected_effect: row.expected_effect_md ?? "No expected effect was stored for this run.",
+    confidence_score: row.confidence_score ?? 0,
+    execution_assets: row.execution_assets_json ?? {
+      owner_brief: "",
+      staff_brief: "",
+      promo_lines: [],
+      sms_caption: "",
+      delivery_description: "",
+    },
+    watch_next_week: row.watch_next_week_json ?? [],
+    source_flags: row.source_flags_json ?? {},
+  };
+}
+
+function mapDecisionPackSnapshots(pack: DecisionPack | null): CompetitorSnapshot[] {
+  const snapshots = pack?.source_flags?.snapshot_candidates;
+  if (!Array.isArray(snapshots)) {
+    return [];
+  }
+
+  return snapshots
+    .filter((snapshot): snapshot is CompetitorSnapshot => Boolean(snapshot && typeof snapshot === "object"))
+    .map((snapshot) => ({
+      competitor: snapshot.competitor,
+      url: snapshot.url ?? null,
+      trigger_score: snapshot.trigger_score ?? null,
+      current_image_url: snapshot.current_image_url ?? null,
+      previous_image_url: snapshot.previous_image_url ?? null,
+      diff_summary: snapshot.diff_summary,
+      capture_note: snapshot.capture_note ?? null,
+      demo_flag: snapshot.demo_flag ?? pack?.source_flags?.demo_flag ?? false,
+    }))
+    .filter((snapshot) => snapshot.competitor && snapshot.diff_summary);
 }
 
 function formatDurationLabel(
@@ -1150,6 +1240,72 @@ export async function getLatestReportRecord(projectId: string): Promise<ReportRe
   return data ? mapReportRecord(data as ReportRow) : null;
 }
 
+async function getDecisionPackByRunId(
+  accountId: string,
+  runId: string,
+): Promise<DecisionPack | null> {
+  const supabase = getSupabaseServerClient();
+  if (!supabase) {
+    return null;
+  }
+
+  const { data, error } = await supabase
+    .from("decision_packs")
+    .select(
+      "id, project_id, run_id, week_label, primary_move_type, primary_move_title, secondary_move_type, pressure_summary_json, why_now_md, evidence_json, expected_effect_md, confidence_score, execution_assets_json, watch_next_week_json, source_flags_json",
+    )
+    .eq("account_id", accountId)
+    .eq("run_id", runId)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingRelationError(error, "decision_packs")) {
+      return null;
+    }
+    throw error;
+  }
+
+  return data ? mapDecisionPackRow(data as DecisionPackRow) : null;
+}
+
+export async function getCompetitorSnapshotsByRunId(runId: string): Promise<CompetitorSnapshot[]> {
+  const context = await getAccountContext();
+  if (!context) {
+    return [];
+  }
+
+  const pack = await getDecisionPackByRunId(context.accountId, runId);
+  return mapDecisionPackSnapshots(pack);
+}
+
+export async function getLatestProjectSnapshots(projectId: string): Promise<CompetitorSnapshot[]> {
+  const context = await getAccountContext();
+  const supabase = getSupabaseServerClient();
+  if (!context || !supabase) {
+    return [];
+  }
+
+  const { data, error } = await supabase
+    .from("decision_packs")
+    .select(
+      "id, project_id, run_id, week_label, primary_move_type, primary_move_title, secondary_move_type, pressure_summary_json, why_now_md, evidence_json, expected_effect_md, confidence_score, execution_assets_json, watch_next_week_json, source_flags_json",
+    )
+    .eq("account_id", context.accountId)
+    .eq("project_id", projectId)
+    .order("created_at", { ascending: false })
+    .limit(1)
+    .maybeSingle();
+
+  if (error) {
+    if (isMissingRelationError(error, "decision_packs")) {
+      return [];
+    }
+    throw error;
+  }
+
+  return data ? mapDecisionPackSnapshots(mapDecisionPackRow(data as DecisionPackRow)) : [];
+}
+
 export async function getLatestReport(projectId: string): Promise<WeeklyIntelReport | null> {
   const record = await getLatestReportRecord(projectId);
   return record?.body ?? null;
@@ -1173,7 +1329,13 @@ export async function getReportById(reportId: string): Promise<ReportRecord | nu
     throw error;
   }
 
-  return data ? mapReportRecord(data as ReportRow) : null;
+  if (!data) {
+    return null;
+  }
+
+  const report = mapReportRecord(data as ReportRow);
+  report.decisionPack = await getDecisionPackByRunId(context.accountId, report.runId);
+  return report;
 }
 
 export async function getDiagnostics(projectId: string): Promise<SourceDiagnostics> {
