@@ -42,6 +42,102 @@ SOURCE_AUTHORITY = {
     "competitor_url": 1,
 }
 
+SOURCE_WEIGHTS = {
+    "google_maps": 1.5,
+    "competitor_url": 2.0,
+    "social": 1.2,
+    "reddit": 1.8,
+    "uber_eats": 1.6,
+}
+
+SOURCE_FLAGS = {
+    "google_maps": "google_reviews",
+    "competitor_url": "website_delta",
+    "reddit": "reddit",
+    "social": "social",
+    "uber_eats": "uber_eats",
+}
+
+PRESSURE_SCORE_FIELDS = [
+    "delivery_value_pressure",
+    "bundle_pressure",
+    "lunch_office_pressure",
+    "late_night_pressure",
+    "urgency_offer_pressure",
+    "differentiation_pressure",
+]
+
+PRESSURE_KEYWORDS = {
+    "delivery_value_pressure": [
+        "delivery",
+        "order online",
+        "free delivery",
+        "value",
+        "deal",
+        "discount",
+        "price",
+        "cheap",
+        "minimum spend",
+    ],
+    "bundle_pressure": [
+        "bundle",
+        "combo",
+        "box",
+        "pack",
+        "group",
+        "share",
+        "family",
+        "meal deal",
+    ],
+    "lunch_office_pressure": [
+        "lunch",
+        "office",
+        "cbd",
+        "weekday",
+        "worker",
+        "student",
+        "desk",
+    ],
+    "late_night_pressure": [
+        "late night",
+        "after 9",
+        "9pm",
+        "midnight",
+        "open late",
+        "night",
+    ],
+    "urgency_offer_pressure": [
+        "limited",
+        "limited time",
+        "today only",
+        "this week",
+        "new",
+        "special",
+        "free",
+        "deadline",
+    ],
+    "differentiation_pressure": [
+        "signature",
+        "crispy",
+        "boneless",
+        "spicy",
+        "sauce",
+        "flavour",
+        "flavor",
+        "hero",
+        "premium",
+    ],
+}
+
+SIGNAL_KIND_PRESSURE_DEFAULTS = {
+    "rating_snapshot": ["differentiation_pressure"],
+    "review_strength": ["differentiation_pressure"],
+    "review_issue": ["differentiation_pressure"],
+    "discussion_signal": ["differentiation_pressure"],
+    "reddit_target_absent_opportunity": ["lunch_office_pressure", "delivery_value_pressure"],
+    "menu_pricing_signal": ["delivery_value_pressure", "urgency_offer_pressure"],
+}
+
 
 ALLOWED_MARKET_STATUS = {"Growth", "Stagnant", "Volatile"}
 
@@ -723,6 +819,144 @@ def parse_reddit_time(created_utc: float) -> datetime:
     return datetime.fromtimestamp(created_utc, tz=timezone.utc)
 
 
+def infer_market_subreddits(location_focus: str) -> List[str]:
+    location = location_focus.lower()
+    subreddits = []
+    for token, names in [
+        ("melbourne", ["melbourne", "melbournefood"]),
+        ("sydney", ["sydney", "foodies_sydney"]),
+        ("brisbane", ["brisbane"]),
+        ("perth", ["perth"]),
+    ]:
+        if token in location:
+            subreddits.extend(names)
+
+    if not subreddits:
+        subreddits.extend(["melbourne", "sydney", "brisbane", "perth"])
+
+    subreddits.append("australia")
+    seen = set()
+    return [sub for sub in subreddits if not (sub in seen or seen.add(sub))]
+
+
+def build_reddit_category_keywords(payload: Dict[str, object]) -> List[str]:
+    text = f"{payload.get('industry') or ''} {payload.get('location_focus') or ''}".lower()
+    keywords = ["best deal", "lunch", "delivery", "bundle"]
+
+    if any(word in text for word in ["restaurant", "chicken", "cafe", "food", "pub", "bar"]):
+        keywords.extend(["best lunch", "late night", "combo", "special"])
+    if "gym" in text or "fitness" in text:
+        keywords.extend(["membership deal", "classes", "trial"])
+
+    seen = set()
+    return [keyword for keyword in keywords if not (keyword in seen or seen.add(keyword))]
+
+
+def normalize_matchable_text(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
+
+
+def reddit_name_matches(text: str, cafe_name: str) -> bool:
+    normalized_text = normalize_matchable_text(text)
+    normalized_name = normalize_matchable_text(cafe_name)
+    if not normalized_text or not normalized_name:
+        return False
+
+    if normalized_name in normalized_text:
+        return True
+
+    tokens = [token for token in normalized_name.split() if len(token) > 2]
+    if len(tokens) >= 2 and all(re.search(rf"\b{re.escape(token)}\b", normalized_text) for token in tokens[:2]):
+        return True
+
+    return len(tokens) == 1 and re.search(rf"\b{re.escape(tokens[0])}\b", normalized_text) is not None
+
+
+def classify_reddit_sentiment(text: str) -> str:
+    lower = text.lower()
+    positive_hits = sum(
+        1
+        for word in ["best", "great", "good", "love", "recommend", "worth", "favourite", "favorite", "cheap"]
+        if word in lower
+    )
+    negative_hits = sum(
+        1
+        for word in ["bad", "awful", "slow", "overpriced", "avoid", "terrible", "expensive", "cold"]
+        if word in lower
+    )
+    if positive_hits > negative_hits:
+        return "positive"
+    if negative_hits > positive_hits:
+        return "negative"
+    return "neutral"
+
+
+def reddit_recency_decay(happened_at: Optional[datetime], last_scan_date: datetime) -> float:
+    if not happened_at:
+        return 0.75
+
+    age_days = max(0, (datetime.now(timezone.utc) - happened_at).days)
+    scan_age_days = max(1, (datetime.now(timezone.utc) - last_scan_date).days + 1)
+    return max(0.35, 1.0 - (age_days / max(7, scan_age_days + 7)))
+
+
+def score_reddit_impact(
+    text: str,
+    sentiment: str,
+    happened_at: Optional[datetime],
+    last_scan_date: datetime,
+    target_absent: bool,
+) -> int:
+    base = normalize_impact(text)
+    if sentiment == "positive":
+        base += 1
+    elif sentiment == "negative":
+        base -= 1
+    if target_absent:
+        base += 1
+
+    return int(max(3, min(10, round(base * reddit_recency_decay(happened_at, last_scan_date)))))
+
+
+def extract_reddit_comments(
+    permalink: str,
+    headers: Dict[str, str],
+    last_scan_date: datetime,
+) -> List[Dict[str, object]]:
+    if not permalink:
+        return []
+
+    try:
+        resp = requests.get(f"https://www.reddit.com{permalink}.json", params={"limit": 20}, headers=headers, timeout=20)
+        if resp.status_code != 200:
+            return []
+        payload = resp.json()
+    except (requests.RequestException, ValueError):
+        return []
+
+    if not isinstance(payload, list) or len(payload) < 2:
+        return []
+
+    comments: List[Dict[str, object]] = []
+    for child in payload[1].get("data", {}).get("children", [])[:20]:
+        data = child.get("data", {}) if isinstance(child, dict) else {}
+        body = str(data.get("body") or "").strip()
+        created = data.get("created_utc")
+        if not body or created is None:
+            continue
+        happened_at = parse_reddit_time(created)
+        if happened_at < last_scan_date:
+            continue
+        comments.append(
+            {
+                "id": data.get("id"),
+                "text": body,
+                "happened_at": happened_at,
+            }
+        )
+    return comments
+
+
 def fetch_reddit_signals(cafes: List[Cafe], last_scan_date: datetime, stats: SourceStats) -> List[Signal]:
     headers = {"User-Agent": "local-edge-weekly/1.0"}
     subreddits = ["melbourne", "australia", "coffee"]
@@ -1003,6 +1237,87 @@ def signal_from_dict(payload: Dict[str, object]) -> Signal:
         confidence=float(payload.get("confidence") or 0),
         happened_at=happened_at,
     )
+
+
+def slugify_name(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "_", value.lower()).strip("_")
+    return slug or "unknown_competitor"
+
+
+def pipeline_week_label(value: object) -> str:
+    try:
+        date = parse_pipeline_date(value, "last_scan_date")
+    except ValueError:
+        date = datetime.now(timezone.utc)
+    iso_year, iso_week, _ = date.isocalendar()
+    return f"{iso_year}-W{iso_week:02d}"
+
+
+def pressure_categories_for_signal(signal: Signal) -> List[str]:
+    text = f"{signal.kind} {signal.summary}".lower()
+    categories = []
+    for field, keywords in PRESSURE_KEYWORDS.items():
+        if any(keyword in text for keyword in keywords):
+            categories.append(field)
+
+    for field in SIGNAL_KIND_PRESSURE_DEFAULTS.get(signal.kind, []):
+        if field not in categories:
+            categories.append(field)
+
+    if not categories:
+        categories.append("differentiation_pressure")
+
+    return categories
+
+
+def source_flag_for_signal(source: str) -> str:
+    return SOURCE_FLAGS.get(source, source or "unknown")
+
+
+def weighted_pressure_value(signal: Signal) -> float:
+    source_weight = SOURCE_WEIGHTS.get(signal.source, 1.0)
+    confidence_multiplier = max(0.1, min(1.0, signal.confidence / 10.0))
+    return max(0.0, signal.impact * confidence_multiplier * source_weight)
+
+
+def build_pressure_scores(
+    week_label: str,
+    competitors: List[Cafe],
+    signals: List[Signal],
+) -> List[Dict[str, object]]:
+    pressure_scores: List[Dict[str, object]] = []
+    signals_by_competitor: Dict[str, List[Signal]] = {competitor.name: [] for competitor in competitors}
+
+    for signal in signals:
+        if signal.cafe in signals_by_competitor:
+            signals_by_competitor[signal.cafe].append(signal)
+
+    for competitor in competitors:
+        scores = {field: 0.0 for field in PRESSURE_SCORE_FIELDS}
+        fired_sources = set()
+        for signal in signals_by_competitor.get(competitor.name, []):
+            fired_sources.add(source_flag_for_signal(signal.source))
+            categories = pressure_categories_for_signal(signal)
+            value = weighted_pressure_value(signal) / max(1, len(categories))
+            for category in categories:
+                scores[category] = min(10.0, scores.get(category, 0.0) + value)
+
+        rounded_scores = {
+            field: int(max(0, min(10, round(scores.get(field, 0.0)))))
+            for field in PRESSURE_SCORE_FIELDS
+        }
+        pressure_scores.append(
+            {
+                "competitor_id": slugify_name(competitor.name),
+                "competitor_name": competitor.name,
+                "week": week_label,
+                "scores": rounded_scores,
+                "total_pressure": sum(rounded_scores.values()),
+                "sources_fired": sorted(fired_sources),
+            }
+        )
+
+    return sorted(pressure_scores, key=lambda item: int(item.get("total_pressure") or 0), reverse=True)
 
 
 def stats_dict(success: int = 0, fail: int = 0) -> Dict[str, object]:
@@ -1320,45 +1635,102 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
         mark_stats_success(stats)
 
     headers = {"User-Agent": "local-edge-weekly/1.0"}
-    subreddits = ["melbourne", "australia", "coffee"]
+    subreddits = infer_market_subreddits(str(payload.get("location_focus") or ""))
+    reddit_keywords = build_reddit_category_keywords(payload)
     reddit_posts: List[Dict[str, object]] = []
+    seen_reddit_hits = set()
     for cafe in cafes:
         cafe_posts_found = 0
         reddit_attempts: List[Dict[str, object]] = []
         fetched_any = False
+        queries = [cafe.name, *[f"{cafe.name} {keyword}" for keyword in reddit_keywords[:3]]]
         for sub in subreddits:
-            try:
-                url = f"https://www.reddit.com/r/{sub}/search.json"
-                params = {"q": cafe.name, "restrict_sr": "1", "sort": "new", "t": "week", "limit": 10}
-                resp = requests.get(url, params=params, headers=headers, timeout=20)
-                reddit_attempts.append({"subreddit": sub, "http_status": resp.status_code})
-                if resp.status_code != 200:
-                    continue
-
-                fetched_any = True
-                data = resp.json()
-                posts = data.get("data", {}).get("children", [])
-                for post in posts:
-                    post_data = post.get("data", {})
-                    created = post_data.get("created_utc")
-                    if created is None:
-                        continue
-                    happened_at = parse_reddit_time(created)
-                    if happened_at < last_scan_date:
+            for query in queries:
+                try:
+                    url = f"https://www.reddit.com/r/{sub}/search.json"
+                    params = {"q": query, "restrict_sr": "1", "sort": "new", "t": "week", "limit": 10}
+                    resp = requests.get(url, params=params, headers=headers, timeout=20)
+                    reddit_attempts.append({"subreddit": sub, "query": query, "http_status": resp.status_code})
+                    if resp.status_code != 200:
                         continue
 
-                    reddit_posts.append(
-                        {
-                            "cafe": cafe.name,
-                            "subreddit": sub,
-                            "title": post_data.get("title", ""),
-                            "body": post_data.get("selftext", ""),
-                            "happened_at": happened_at.isoformat(),
-                        }
-                    )
-                    cafe_posts_found += 1
-            except requests.RequestException:
-                reddit_attempts.append({"subreddit": sub, "error_message": "request_exception"})
+                    fetched_any = True
+                    data = resp.json()
+                    posts = data.get("data", {}).get("children", [])
+                    for post in posts:
+                        post_data = post.get("data", {})
+                        post_id = str(post_data.get("id") or "")
+                        created = post_data.get("created_utc")
+                        if created is None:
+                            continue
+                        happened_at = parse_reddit_time(created)
+                        if happened_at < last_scan_date:
+                            continue
+
+                        title = str(post_data.get("title") or "")
+                        body = str(post_data.get("selftext") or "")
+                        post_text = f"{title} {body}".strip()
+                        if not reddit_name_matches(post_text, cafe.name):
+                            continue
+
+                        hit_key = (post_id, cafe.name, "post")
+                        if hit_key in seen_reddit_hits:
+                            continue
+                        seen_reddit_hits.add(hit_key)
+
+                        target_absent = not any(
+                            item.kind == "target" and reddit_name_matches(post_text, item.name)
+                            for item in cafes
+                        )
+                        matched_keywords = [
+                            keyword for keyword in reddit_keywords if keyword.lower() in post_text.lower()
+                        ]
+                        reddit_posts.append(
+                            {
+                                "cafe": cafe.name,
+                                "subreddit": sub,
+                                "title": title,
+                                "body": body,
+                                "happened_at": happened_at.isoformat(),
+                                "sentiment": classify_reddit_sentiment(post_text),
+                                "matched_keywords": matched_keywords,
+                                "target_absent": target_absent,
+                                "permalink": post_data.get("permalink"),
+                            }
+                        )
+                        cafe_posts_found += 1
+
+                        for comment in extract_reddit_comments(str(post_data.get("permalink") or ""), headers, last_scan_date):
+                            comment_text = str(comment.get("text") or "")
+                            if not reddit_name_matches(comment_text, cafe.name):
+                                continue
+                            comment_key = (str(comment.get("id") or ""), cafe.name, "comment")
+                            if comment_key in seen_reddit_hits:
+                                continue
+                            seen_reddit_hits.add(comment_key)
+                            reddit_posts.append(
+                                {
+                                    "cafe": cafe.name,
+                                    "subreddit": sub,
+                                    "title": title,
+                                    "body": comment_text,
+                                    "happened_at": comment["happened_at"].isoformat()
+                                    if isinstance(comment.get("happened_at"), datetime)
+                                    else None,
+                                    "sentiment": classify_reddit_sentiment(comment_text),
+                                    "matched_keywords": [
+                                        keyword for keyword in reddit_keywords if keyword.lower() in comment_text.lower()
+                                    ],
+                                    "target_absent": not any(
+                                        item.kind == "target" and reddit_name_matches(comment_text, item.name)
+                                        for item in cafes
+                                    ),
+                                    "permalink": post_data.get("permalink"),
+                                }
+                            )
+                            cafe_posts_found += 1
+                except (requests.RequestException, ValueError):
+                    reddit_attempts.append({"subreddit": sub, "query": query, "error_message": "request_or_parse_exception"})
 
         reddit_diagnostics.append(
             {
@@ -1366,6 +1738,7 @@ def source_collection(payload: Dict[str, object]) -> Dict[str, object]:
                 "fetched": fetched_any,
                 "posts_found": cafe_posts_found,
                 "subreddits": subreddits,
+                "category_keywords": reddit_keywords,
                 "attempts": reddit_attempts,
             }
         )
@@ -1502,13 +1875,25 @@ def signal_extraction(payload: Dict[str, object]) -> Dict[str, object]:
         happened_at_raw = post.get("happened_at")
         happened_at = datetime.fromisoformat(happened_at_raw) if isinstance(happened_at_raw, str) else None
         confidence = score_confidence_from_text(text)
+        sentiment = str(post.get("sentiment") or classify_reddit_sentiment(text))
+        target_absent = bool(post.get("target_absent"))
+        matched_keywords = post.get("matched_keywords")
+        keyword_suffix = (
+            f" Matched keywords: {', '.join([str(item) for item in matched_keywords[:4]])}."
+            if isinstance(matched_keywords, list) and matched_keywords
+            else ""
+        )
         signals.append(
             Signal(
                 source="reddit",
                 cafe=str(post.get("cafe") or ""),
-                kind="discussion_signal",
-                summary=text[:260] if text else "Mentioned in Reddit discussion.",
-                impact=normalize_impact(text),
+                kind="reddit_target_absent_opportunity" if target_absent else "discussion_signal",
+                summary=(
+                    f"{text[:220]} Sentiment: {sentiment}.{keyword_suffix}"
+                    if text
+                    else f"Mentioned in Reddit discussion. Sentiment: {sentiment}.{keyword_suffix}"
+                ),
+                impact=score_reddit_impact(text, sentiment, happened_at, last_scan_date, target_absent),
                 confidence=confidence,
                 happened_at=happened_at,
             )
@@ -1582,6 +1967,35 @@ def signal_extraction(payload: Dict[str, object]) -> Dict[str, object]:
     return next_payload
 
 
+def pressure_scoring(payload: Dict[str, object]) -> Dict[str, object]:
+    week_label = pipeline_week_label(payload.get("last_scan_date"))
+    competition = [cafe_from_dict(item) for item in payload.get("competition", [])]
+    resolved_signals = [signal_from_dict(item) for item in payload.get("resolved_signals", []) if isinstance(item, dict)]
+    pressure_scores = build_pressure_scores(week_label, competition, resolved_signals)
+
+    next_payload = dict(payload)
+    next_payload["pressure_scores"] = pressure_scores
+    stage_outputs = dict(next_payload.get("stage_outputs") or {})
+    stage_outputs["pressure_scoring"] = {
+        "week": week_label,
+        "competitors_scored": len(pressure_scores),
+        "highest_total_pressure": max(
+            [int(item.get("total_pressure") or 0) for item in pressure_scores],
+            default=0,
+        ),
+        "sources_fired": sorted(
+            {
+                source
+                for item in pressure_scores
+                for source in item.get("sources_fired", [])
+                if isinstance(source, str)
+            }
+        ),
+    }
+    next_payload["stage_outputs"] = stage_outputs
+    return next_payload
+
+
 def report_generation(payload: Dict[str, object]) -> Dict[str, object]:
     last_scan_date = parse_pipeline_date(payload.get("last_scan_date"), "last_scan_date")
     targets = [cafe_from_dict(item) for item in payload.get("targets", [])]
@@ -1613,6 +2027,7 @@ def notification(payload: Dict[str, object]) -> Dict[str, object]:
         "report": payload.get("report", {}),
         "noise_log": payload.get("noise_log", []),
         "resolved_signals": payload.get("resolved_signals", []),
+        "pressure_scores": payload.get("pressure_scores", []),
         "source_diagnostics": payload.get("source_diagnostics", {}),
         "dashboard_summary": payload.get("dashboard_summary", ""),
         "stage_outputs": payload.get("stage_outputs", {}),
@@ -1631,6 +2046,7 @@ STAGE_FUNCTIONS: Dict[str, Callable[[Dict[str, object]], Dict[str, object]]] = {
     "place_resolution": place_resolution,
     "source_collection": source_collection,
     "signal_extraction": signal_extraction,
+    "pressure_scoring": pressure_scoring,
     "report_generation": report_generation,
     "notification": notification,
 }
