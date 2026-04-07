@@ -13,6 +13,33 @@ function renderChip(label: string, tone: "good" | "warn" | "neutral") {
   return <span className={className}>{label}</span>;
 }
 
+function summarizeDiagnostics(diagnostics: SourceDiagnostics, successRatio: number) {
+  const resolvedVenues = diagnostics.google_maps.filter((entry) => entry.resolved).length;
+  const fetchedCompetitorPages = diagnostics.competitor_urls.filter((entry) => entry.fetched).length;
+  const discussionPosts = diagnostics.reddit.reduce((sum, entry) => sum + entry.posts_found, 0);
+  const keywords = diagnostics.competitor_urls.flatMap((entry) => entry.matched_keywords);
+  const visibleKeywords = [...new Set(keywords)].slice(0, 6);
+  const offerKeywords = keywords.filter((keyword) =>
+    /deal|offer|special|bundle|combo|delivery|lunch|late|book|order|free|box/i.test(keyword),
+  );
+
+  return {
+    sourceHealth:
+      successRatio >= 95
+        ? `We checked the full tracked market: ${resolvedVenues} venues, ${fetchedCompetitorPages} competitor websites, and discussion sources all came back clean.`
+        : `We checked the tracked market, but ${diagnostics.source_stats.fail} source checks need attention before this run is fully trusted.`,
+    marketActivity:
+      visibleKeywords.length > 0
+        ? `Competitor pages are showing ${visibleKeywords.join(", ")} signals. That points to what buyers are being trained to notice.`
+        : `Competitor pages were reachable, but this run did not find strong tracked offer language.`,
+    ownerAction:
+      offerKeywords.length > 0
+        ? `Treat this as offer pressure. Pick one clear counter-move for the next run: a named bundle, delivery hook, lunch offer, or booking message.`
+        : `Treat this as a quiet market check. Keep monitoring, but do not force a campaign unless the report found a stronger owner action.`,
+    evidence: `${discussionPosts} public discussion matches and ${keywords.length} competitor website keywords were captured as evidence.`,
+  };
+}
+
 export function DiagnosticsTable({
   diagnostics,
   diagnosticsEnabled,
@@ -20,6 +47,7 @@ export function DiagnosticsTable({
 }: DiagnosticsTableProps) {
   const canViewDiagnostics = diagnosticsEnabled || internalAccess;
   const successRatio = Math.round((1 - diagnostics.source_stats.failure_ratio) * 100);
+  const summary = summarizeDiagnostics(diagnostics, successRatio);
 
   if (!canViewDiagnostics) {
     return (
@@ -50,6 +78,29 @@ export function DiagnosticsTable({
           <strong>{successRatio}%</strong>
         </div>
       </div>
+
+      <article className="panel">
+        <p className="eyebrow">Owner Translation</p>
+        <h3>What this means</h3>
+        <div className="card-grid">
+          <div className="panel insight-card insight-good">
+            <p className="eyebrow">Source health</p>
+            <p>{summary.sourceHealth}</p>
+          </div>
+          <div className="panel insight-card insight-warn">
+            <p className="eyebrow">Market activity</p>
+            <p>{summary.marketActivity}</p>
+          </div>
+          <div className="panel insight-card insight-neutral">
+            <p className="eyebrow">Owner action</p>
+            <p>{summary.ownerAction}</p>
+          </div>
+          <div className="panel insight-card insight-neutral">
+            <p className="eyebrow">Evidence</p>
+            <p>{summary.evidence}</p>
+          </div>
+        </div>
+      </article>
 
       <div className="dashboard-grid">
         <article className="panel">
